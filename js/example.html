@@ -1,0 +1,33 @@
+
+<!DOCTYPE HTML>
+<html>
+  <head>
+    <title>"Intercom example"</title>
+    <script type="text/javascript" src="Intercom.js"></script>
+    <script type="text/javascript">
+      ready=function(){
+          window.intercom=new ks.Intercom({url:"/talk",
+                                           pollTimeFast:500});
+      
+          var requestId=intercom.call({name:"test",
+                                       args:[10,2,1],
+                                       onResponse:function(response){
+                                           console.log("intermediate response: " +JSON.stringify(response));
+                                       },
+                                       onFinish:function(response){
+                                           console.log("final response: "+ JSON.stringify(response));
+                                       }
+                                      });
+          /*
+            setTimeout(function(){
+            intercom.destroy();
+            },10000);
+          */
+      }
+      
+    </script>
+  </head>
+  <body onload="ready();">
+    
+  </body>
+</html>

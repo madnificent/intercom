@@ -1,0 +1,708 @@
+Intercom -- Javascript endpoint
+
+* Creating a communication object
+The connection with the server is managed through the following javascript object
+
+#+BEGIN_SRC js :tangle Intercom.js :noweb yes
+  //* check if we are free to use the ks namespace. Ensure that this is the final library that is loaded to be entirely sure.
+  if(window.ks===undefined){
+      ks={};
+  }else if(typeof ks != "object"){
+      throw new Error("Sorry, the ks namespace seems to be taken, please adjust the source code to cover this issue");
+  }
+  
+  //* constructor for an Intercom object. It expects an object that can have the objects as defined in the intercom recepy.
+  ks.Intercom= function(args){
+      //* initialize properties that would otherwise be used in static fashion
+      this.currentRequests={};
+      this.requestStack=[];
+      
+      for(var prop in args){
+          this[prop]=args[prop];
+      }
+  
+      this.pollServer();
+  
+      var toBeDestroyed=this;
+      //ensure the intercom's messages are cancelled when the browser window closes
+      if(window.onunload){
+          var temp=window.onunload;
+          window.onunload=function(){
+              temp();
+              toBeDestroyed.destroy();
+          }
+      }else{
+          window.onunload=function(){
+              toBeDestroyed.destroy();
+          }
+      }
+  };
+  
+  //* recepy for the intercom class. Will be inserted into the prototype of the ks.Intercom function.
+  var intercomRecipe={
+      //* whether or not to log all incoming results
+      debug:false,    
+      url:"http://server/intercom/talk",
+      //* how fast the server is polled when there are no outstanding requests in ms
+      pollTimeSlow:2000,
+      //* how fast the server is polled when there are outstanding requests in ms
+      pollTimeFast:100,
+  
+      //* current outstanding requests
+      currentRequests:null,
+  
+      <<api>>,
+      <<talk>>,
+      <<polling>>,
+      <<handling-responses>>,
+      <<low-level-interaction>>,
+  
+      MONTH:2678400000,
+      //* builds a new id for the given request
+      newRequestId:function(request){
+          // assume a request can run max thirty days and that it is improbable that more than 10000 requests are made per ms per session.
+          var id=new Date().getTime()%(this.MONTH)*1000000+Math.floor(Math.random()*1000000);
+          return id+"";
+      },
+  
+      //* upon destruction, all open requests are cancelled.
+      destroy:function(){
+          var rids=[];
+          for(var idx in this.currentRequests){
+              rids.push(this.currentRequests[idx].rid);
+          }
+          this.cancel(rids);
+          this.stopPolling();
+          this.currentRequests={};
+      }    
+  };
+  
+  //* insert the recepy into the prototype
+  for(var prop in intercomRecipe){
+      ks.Intercom.prototype[prop]=intercomRecipe[prop];
+  }
+#+END_SRC
+
+* Using the intercom
+This section holds the public api for using the intercom. One can initiate a new call on the intercom using the call function. This function accepts an object to be sent to the server.
+
+Currently, a request object has the following layout:
+#+BEGIN_SRC js
+  {rid:"some id",
+   name:"the name of the method to call",
+   args:["argument1", 2, "argument3"],
+   onResponse:function(){},
+   onFinish:function(){},
+   keys:["some","keys","that","signal","request","termination"]
+  }  
+#+END_SRC
+
+where only rid, name and args are sent to the server. The rid field is automatically generated.
+
+Using the intercom happens through the following interface.
+#+name:api
+#+BEGIN_SRC js
+  //* @public
+  //* makes a new call on the server with the given message. A new id is generated for this request and this id is returned.
+  call:function(request){
+      var id=this.newRequestId(request);
+      request.rid=id;
+      
+      this.currentRequests[id]=request;
+  
+      // keep only relevant properties
+      var shortenedRequest={};
+      shortenedRequest.rid=request.rid;
+      shortenedRequest.name=request.name;
+      shortenedRequest.args=request.args;
+      
+      this.pollServer({open:[shortenedRequest]});
+      
+      return id;
+  },
+  
+  //* cancels the request with the given id(s) on the server.
+  cancel:function(requestId){
+      var message={close:[]};
+      if(typeof requestId=="object" && requestId.length && requestId.push){
+          message.close=requestId;
+      }else{
+          message.close.push(requestId);
+      }
+      this.pollServer(message);
+      this.complete(requestId);
+  },
+  
+  /**
+     marks the request with the given id as complete. Providing a list of ids is also supported.
+     NOTE: this function does NOT inform the server that the request should no longer be remembered
+  ,*/
+  complete:function(requestId){
+      if(typeof requestId=="object" && requestId.length && requestId.push){
+          for(var i=0, id;id=requestId[i];i++){
+              delete this.currentRequests[id];
+          }
+      }else{
+          delete this.currentRequests[requestId];
+      }
+  }
+#+END_SRC
+* The polling scheme
+It is possible that the server sends us messages autonomously. Because we have no way of knowing when such a message is available, we need to poll the server every n milliseconds. The time between such poll requests is much shorter when we are waiting for a response to one of our requests (these are not necessarily handled immediately).
+
+#+name:polling
+#+BEGIN_SRC js
+  halted:false,
+  pollTimeout:null,
+  //* polls the server for a new message and queues a new request after either pollTimeSlow ms if no requests remain to be handled or pollTimeFast ms if there are requests that should be handled. (args are the arguments to be passed in to the talk function
+  pollServer:function(args){
+      if(this.halted){
+          return;
+      }
+  
+      if(this.pollTimeout){
+          clearTimeout(this.pollTimeout);
+      }
+      
+      this.talk(args);
+  
+      var openRequests=false;
+      for(var prop in this.currentRequests){
+          openRequests=true;
+          break;
+      }
+  
+      var context=this;
+      var nextPoll=function(){
+          context.pollServer.call(context);
+      };
+      
+      this.pollTimeout=setTimeout(nextPoll,openRequests?this.pollTimeFast:this.pollTimeSlow);
+  },
+  stopPolling:function(){
+      this.halted=true;
+  }
+#+END_SRC
+* Talking to the server
+All communication with the server happens through a function that is called talk. This function can receive optional open or close requests that are sent to the server. Only one request can be in process at any given time. New requests that are made in the time in between are stored in the requestStack. When the ongoing request finishes, the requestStack is examined. If it is not empty, a new talk call is made where all outstanding requests are merged into one call.
+
+#+name:talk
+#+BEGIN_SRC js
+  talking:false,
+  requestStack: null,
+  //* asks the server for new messages. args can contain a javascript object with open and close properties. These hold the new requests that are initiated or the requests that got removed
+  talk:function(args){
+      var message={};
+      if(args){
+          if(args.open){
+              message.open=args.open;
+          }
+          if(args.close){
+              message.close=args.close;
+          }
+      }
+  
+      if(this.talking){
+          this.requestStack.push(message);
+      }else{
+          this.talking=true;
+          try{
+              this.sendRequest(message);
+          }catch(error){
+              if(console){
+                  if(console.error){
+                      console.error(error.message?error.message:error);
+                  }else if(console.log){
+                      console.log(error.message?error.message:error);
+                  }
+              }
+          }
+      }
+  },
+  
+  //* merges all current requests in the requeststack into one single message and returns this message. Returns null if no message needs to be sent
+  mergeRequestStack:function(){
+      var message={open:[], close:[]};
+      if(this.requestStack.length<=0){
+          return null;
+      }
+      for(var i=0;i<this.requestStack.length;i++){
+          var request=this.requestStack[i];
+          if(request.open){
+              message.open=message.open.concat(request.open);
+          }
+          if(request.close){
+              message.close=message.close.concat(request.close);
+          }       
+      }
+      return message;
+  },
+  //* when a reply is received, the intercom responds to any requests that received new information and empties the requestStack if it is present
+  handleReply:function(reply){
+      this.talking=false;
+      
+      this.respondToRequests(reply);
+      
+      var followUpRequest=this.mergeRequestStack();
+      if(followUpRequest){
+          this.requestStack=[];
+          this.talk(followUpRequest);
+      }
+  }
+#+END_SRC
+* Handling server responses
+The server responds to a poll by sending a javascript object that holds for every requestId with new information a message object. This object is passed on to the handler of the request.
+
+#+name:handling-responses
+#+BEGIN_SRC js
+  //* handles all new information that the server sends our way.
+  respondToRequests:function(responses){
+      if(this.debug && console && console.log && responses.length>0){
+          console.log("server sent message: "+JSON.stringify(responses));
+      }
+      for(var i=0;i<responses.length;i++){
+          var response=responses[i];
+          var requestId=response.rid;
+          var request=this.currentRequests[requestId];
+          if(request){
+              if(request.keys && request.keys.indexOf(response.type)>=0){
+                  request.onFinish(response);
+                  this.complete(requestId);
+              }else{
+                  request.onResponse(response);
+              }
+              
+          }else if(console && console.log){
+              console.log("received information on event that we were not tracking!");
+          }
+      }
+  }
+#+END_SRC
+
+* Low-level server interaction
+The actual interaction with the server happens through http requests. This lower layer should not be used outside of the intercom object.
+#+name:low-level-interaction
+#+BEGIN_SRC js
+  //* sends a http request to the server
+  sendRequest:function(requestObject){
+      var httpRequest;
+      if (window.XMLHttpRequest) { // Mozilla, Safari, ...
+          httpRequest = new XMLHttpRequest();
+      } else if (window.ActiveXObject) { // IE 8 and older
+          httpRequest = new ActiveXObject("Microsoft.XMLHTTP");
+      }
+  
+      var context=this;
+      httpRequest.onreadystatechange = function(){
+          context.handleReadyStateChanged.call(context,httpRequest);
+      };
+  
+      var open=requestObject.open?JSON.stringify(requestObject.open):[];
+      var close=requestObject.close?JSON.stringify(requestObject.close):[];
+      
+      httpRequest.open('GET', this.url+"?"+(open.length>0?"open="+open:"")+(close.length>0?"&close="+close:""));
+      httpRequest.setRequestHeader('Content-Type','application/json');
+      httpRequest.send(null);    
+  },
+  //* handles the response of the server
+  handleReadyStateChanged:function(request){
+      if(request.readyState === 4){
+          // request has been handled
+          if(request.status === 200){
+              var response= JSON.parse(request.responseText);
+              this.handleReply(response);
+          }else if(request.onError){
+              request.onError(request);
+          }else if(console && console.log){
+              console.log("Sorry, apparently something went horribly wrong! The server responded with a "+request.status+ " error code...");
+          }
+      }else{
+          // no ready yet!
+      }
+  },
+  //* encodes the given javascript object so it can be sent to the server, credit goes to enyojs.
+  objectToQuery: function(/*Object*/ map) {
+      var enc = encodeURIComponent;
+      var pairs = [];
+      var backstop = {};
+      for (var name in map){
+          var value = map[name];
+          if (value != backstop[name]) {
+              var assign = enc(name) + "=";
+              if (value.length!==undefined && typeof value != "string") {
+                  for (var i=0; i < value.length; i++) {
+                      pairs.push(assign + enc(value[i]));
+                  }
+              } else {
+                  pairs.push(assign + enc(value));
+              }
+          }
+      }
+      return pairs.join("&");
+  }  
+#+END_SRC
+
+* Example
+This is an example site that uses the intercom class
+
+#+BEGIN_SRC html :noweb yes :tangle example.html
+  <!DOCTYPE HTML>
+  <html>
+    <head>
+      <title>"Intercom example"</title>
+      <script type="text/javascript" src="Intercom.js"></script>
+      <script type="text/javascript">
+        <<ready>>
+      </script>
+    </head>
+    <body onload="ready();">
+      
+    </body>
+  </html>
+  
+  
+#+END_SRC
+
+#+name:ready
+#+BEGIN_SRC js
+  ready=function(){
+      window.intercom=new ks.Intercom({url:"/talk",
+                                       pollTimeFast:500});
+  
+      var requestId=intercom.call({name:"test",
+                                   args:[10,2,1],
+                                   onResponse:function(response){
+                                       console.log("intermediate response: " +JSON.stringify(response));
+                                   },
+                                   onFinish:function(response){
+                                       console.log("final response: "+ JSON.stringify(response));
+                                   }
+                                  });
+      /*
+        setTimeout(function(){
+        intercom.destroy();
+        },10000);
+      */
+  }
+  
+#+END_SRC
+* Tests
+The following functions represent the testcases for the intercom library.
+
+#+BEGIN_SRC html :tangle tests.html
+  <!DOCTYPE HTML>
+  <html>
+    <head>
+      <title>"Intercom tests"</title>
+      <script type="text/javascript" src="Intercom.js"></script>
+    </head>
+    <body>
+      <script type="text/javascript" src="tests.js"></script>
+    </body>
+  </html>
+#+END_SRC
+
+#+BEGIN_SRC js :tangle tests.js :noweb yes
+  intercomLocation="/talk";
+  intercom=new ks.Intercom({url:intercomLocation,debug:true});
+  
+  <<asynchronous-test>>
+  <<test-standard>>
+  <<test-cancel>>
+  <<test-destroy>>
+  <<testFlood>>
+#+END_SRC
+** Server remote procedures
+The server has the following remote procedures available. All procedures contain a result property in their response.
+*** echo (stuff, count, interval)
+This function returns the value of stuff count times with an interval of interval. Its finalizing key is "ready".
+*** random-time(count,min,max, endkey)
+This function returns intermediate status reports that tell the user how long he has been waiting for a response. It keeps doing this for count times. Every step takes at minimum min milliseconds, and at maximum max ms. Its finalizing key is added as a fourth argument.
+*** eval(string)
+Evaluates the given string as lisp code and sends the result when ready
+** providing asynchronous testing functions
+A general --yet ugly-- asynchronous testing framework function is given below
+
+#+name:asynchronous-test
+#+BEGIN_SRC js
+  /**
+     runs the given function with the (optional) given initialResults and checks the results against the object in expected. The test gets duration ms to complete
+  
+     the specs object can have the following values:
+     - expected:: expected results object, results may contain more properties than expected! (required),
+     - toTest:: the function to test with one argument that corresponds to the results object (required),
+     - duration:: the time the test has to run, after this time the results are examined,
+     - initialResults:: the initial results object (optional),
+     - after:: the function to call after the test has completed (and no error was produced), the arguments of this function are the specs itself (optional);
+   */
+  function asyncTest(specs){
+      var temp=specs.initialResults || {};
+      var results={};
+      for(var prop in temp){
+          results[prop]=temp[prop];
+      }
+      specs.results=results;
+  
+      var processTestResults=function(){
+          var failed=false;
+          for(var prop in specs.expected){
+              if(specs.expected[prop]!=results[prop]){
+                  failed=true;
+              }
+          }
+  
+          if(failed){
+              specs.results.intercom.destroy();
+              throw new Error("Did not receive the correct test results! \nExpected: "+
+                              JSON.stringify(specs.expected)+"\nReceived: "+
+                              JSON.stringify(results));
+          }
+  
+          if(specs.after){
+              specs.after.call(this,specs);
+          }
+  
+          if(!specs.dontLog && console && console.log){console.log("Test succeeded: "+specs.toTest.name);}
+      };
+  
+      setTimeout(processTestResults,specs.duration);
+  
+      specs.toTest.call(this,specs.results);    
+  }
+#+END_SRC
+** Standard testing
+The standard case listens for three echos. It checks whether all echos have been received and whether their content had the expected value.
+
+#+name:test-standard
+#+BEGIN_SRC js
+  function testStandard(results){
+      results.intercom=intercom;
+      var content="foobar";
+  
+      results.id=intercom.call(
+          {name:"echo",
+           args:[{string:content,
+                  count:3,
+                  interval:1000}],
+           keys:["ready"],
+           onResponse:function(response){
+               results.count+=1;
+               if(response.type!="value"|| response.body!=content){
+                   results.error="content did not have expected format";
+               }
+           },
+           onFinish:function(response){
+               if(response.body!=true){
+                   results.error="final content did not have expected format";
+               }else{
+                   results.requestFinished=true;
+               }
+           }
+          });
+  };
+  asyncTest({
+      expected: {count:3,
+                 error:null,
+                 requestFinished:true},
+      toTest: testStandard,
+      duration: 4000,
+      initialResults:{count:0,
+                      error:null},
+      after:function(specs){
+          var results=specs.results;
+          if(results.intercom.currentRequests[results.id]!==undefined){
+              throw new Error("request not correctly removed from currentRequests");
+          }
+          startCancelTest();
+      }
+  });
+#+END_SRC
+
+** Cancel requests
+The standard case listens for three echos. It checks whether all echos have been received and whether their content had the expected value.
+
+#+name:test-cancel
+#+BEGIN_SRC js
+  function testCancel(results){
+      results.intercom=intercom;
+      var content="foobar";
+      var interval=1000;
+  
+      results.id=intercom.call(
+          {name:"echo",
+           args:[{string:content,
+                  count:3,
+                  interval:interval}],
+           keys:["ready"],
+           onResponse:function(response){
+               results.count+=1;
+               if(response.type!="value"|| response.body!=content){
+                   results.error="content did not have expected format";
+               }
+           },
+           onFinish:function(response){
+               if(response.body!=true){
+                   results.error="final content did not have expected format";
+               }
+           }
+          });
+  
+      setTimeout(function(){
+          results.intercom.cancel(results.id);
+      },interval+interval/2);
+  };
+  function startCancelTest(){
+      asyncTest({
+          expected: {count:1,
+                     error:null},
+          toTest: testCancel,
+          duration: 3000,
+          initialResults:{count:0,
+                          error:null},
+          after:function(specs){
+              var results=specs.results;
+              if(results.intercom.currentRequests[results.id]!==undefined){
+                  throw new Error("request not correctly removed from currentRequests");
+              }
+              startDestroyTest();
+          }
+      });
+  }
+#+END_SRC
+
+** Destroy test
+Upon destruction, all active connections should be cancelled.
+
+#+name:test-destroy
+#+BEGIN_SRC js
+  function testDestroy(results){
+      results.intercom=intercom;
+      var content="echo1";
+      var interval=1000;
+  
+      results.firstId=intercom.call(
+          {name:"echo",
+           args:[{string:content,
+                  count:3,
+                  interval:interval}],
+           keys:["ready"],
+           onResponse:function(response){
+               results.count+=1;
+               if(response.type!="value"|| response.body!=content){
+                   results.error="content did not have expected format";
+               }
+           },
+           onFinish:function(response){
+               if(response.body!=true){
+                   results.error="final content did not have expected format";
+               }
+           }
+          });
+  
+      var secondContent="echo2";
+      results.secondId=intercom.call(
+          {name:"echo",
+           args:[{string:secondContent,
+                  count:3,
+                  interval:interval}],
+           keys:["ready"],
+           onResponse:function(response){
+               results.count+=1;
+               if(response.type!="value"|| response.body!=secondContent){
+                   results.error="content did not have expected format";
+               }
+           },
+           onFinish:function(response){
+               if(response.body!=true){
+                   results.error="final content did not have expected format";
+               }
+           }
+          });
+  
+      setTimeout(function(){
+          results.intercom.destroy();
+      },interval+interval/2);
+  };
+  
+  function startDestroyTest(){
+      asyncTest({
+          expected: {count:2,
+                     error:null},
+          toTest: testDestroy,
+          duration: 3000,
+          initialResults:{count:0,
+                          error:null},
+          after:function(specs){
+              var results=specs.results;
+              if(results.intercom.currentRequests[results.firstId]!==undefined ||
+                 results.intercom.currentRequests[results.secondId]!==undefined){
+                  throw new Error("request not correctly removed from currentRequests");
+              }
+              intercom=new ks.Intercom({url:intercomLocation,debug:true});
+              testFlood();
+          }
+      });
+  }
+#+END_SRC
+** Flooding test
+The server should not mess up responses when there are quite a lot of them going on at the same time.
+
+#+name:testFlood
+#+BEGIN_SRC js
+  function testFloodSingle(results){
+      results.intercom=intercom;
+      var content="foobar";
+      
+      results.id=intercom.call(
+          {name:"echo",
+           args:[{string:content,
+                  count:3,
+                  interval:1000}],
+           keys:["ready"],
+           onResponse:function(response){
+               results.count+=1;
+               if(response.type!="value"|| response.body!=content){
+                   results.error="content did not have expected format";
+               }
+           },
+           onFinish:function(response){
+               if(response.body!=true){
+                   results.error="final content did not have expected format";
+               }else{
+                   results.requestFinished=true;
+               }
+           }
+          });
+  };
+  
+  function testFlood(){
+      var testSucceeded=[];
+      var testCount=100;
+      for(var i=0;i<testCount;i++){
+          asyncTest({
+              expected: {count:3,
+                         error:null,
+                         requestFinished:true},
+              dontLog:true,
+              toTest: testFloodSingle,
+              duration: 20000,
+              initialResults:{count:0,
+                              error:null,
+                              idx:i
+                             },
+              after:function(specs){
+                  var results=specs.results;
+                  if(results.intercom.currentRequests[results.id]!==undefined){
+                      results.intercom.destroy();
+                      throw new Error("request not correctly removed from currentRequests");
+                  }
+                  testSucceeded.push(specs);
+                  if(testSucceeded.length==testCount){
+                      console.log("flooding test succeeded");
+                      results.intercom.destroy();
+                  }
+              }
+          });
+      }
+  }
+#+END_SRC
