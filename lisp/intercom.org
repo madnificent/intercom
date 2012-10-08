@@ -1,0 +1,353 @@
+#+PROPERTY: tangle no
+#+PROPERTY: cache no
+#+PROPERTY: session yes
+#+PROPERTY: results silent
+#+PROPERTY: no-expand yes
+#+PROPERTY: noweb yes
+#+PROPERTY: exports code
+#+PROPERTY: padline yes
+Lisp Intercom
+
+this document describes the intercom system from the lisp side.  this contains the description of how to send and receive documents from the client and how to handle them.
+
+* prerequisites
+intercom assumes the existence of hunchentoot and of jsown for communication with the clients.  it publishes two paths to handle the communication.
+
+#+begin_src lisp :tangle intercom.asd
+  (asdf:defsystem :intercom
+    :name "Intercom"
+    :author "Aad Versteden <madnificent@gmail.com>"
+    :version "0.0.1"
+    :maintainer "Aad Versteden <madnificent@gmail.com>"
+    :licence "MIT"
+    :description "Intercom allows bidirectional message passing between javascript and lisp."
+    :depends-on (jsown hunchentoot bordeaux-threads split-sequence)
+    :serial t
+    :components ((:file "packages")
+                 (:file "intercom")))
+#+end_src
+
+* package specification
+intercom is simple and consists of one package which exports everything.  we didn't opt for a special separate package for the implementation due to the limited amount of exported constructs.
+
+#+begin_src lisp :tangle packages.lisp
+  (defpackage :intercom
+    (:use :cl :jsown)
+    (:export :define-remote-procedure
+             :message))
+#+end_src
+
+* data structures
+:PROPERTIES:
+:noweb-ref: data-structures
+:END:
+
+most of the information about the threads is stored in the user's session.  the datastructures and the operations which can occur on them are described in this section.
+
+** parameters
+we define the parameters separately, this makes it clear what all the relevant parameters are.
+
+#+begin_src lisp
+  (defparameter *remote-procedures* (make-hash-table :test 'equal :synchronized t)
+    "contains all intercom remote procedures, the keywords being the matched string and the values being the corresponding function.")
+  
+  (defparameter *rid* nil
+    "variable which contains the request id in functions which represent the execution of a remote procedure.")
+  
+  (defparameter *store* nil
+    "contains a key-value store for the variables which *should* be in the session")
+#+end_src
+
+** user session
+the session of the user will be contacted on various occasions, in multiple threads.  therefore, we create a function which creates the session and -if necessary- populates it with a lock which should be held when modifying the variables in the session.  some sugar is added to manage the session locks in the macro with-session-lock.
+
+#+begin_src lisp
+  (defmacro with-session-lock ((protection-symbol) &body body)
+    "executes <body> in a piece of code in which the session is locked"
+    `(progn
+       (assert-session)
+       (macrolet ((,protection-symbol (&body body)
+                    `(bordeaux-threads:with-recursive-lock-held ((gethash 'intercom-session-lock *store*))
+                       ,@body)))
+         ,@body)))
+  
+  (defmacro in-intercom-session (&body body)
+    "executes a hunchentoot request in an environment in which *store* is bound to the current store."
+    (let ((store-exists-p (gensym "store-exists-p")))
+      `(progn (hunchentoot:start-session)
+              (let ((,store-exists-p (hunchentoot:session-value 'store))
+                    *store*)
+                (unless ,store-exists-p
+                  (setf (hunchentoot:session-value 'store) (make-hash-table :synchronized t)))
+                (setf *store* (hunchentoot:session-value 'store))
+                (unless ,store-exists-p
+                  (setf (gethash 'intercom-session-lock *store*)
+                        (bordeaux-threads:make-lock "intercom session lock")))
+                ,@body))))
+  
+  (defun assert-session ()
+    "asserts that we're currently running in an environment which is sane for intercom requests/executions"
+    (assert *store*)
+    (assert (gethash 'intercom-session-lock *store*)))
+  
+  (defun intercom-var (variable)
+    "returns <variable> from the session in *store*"
+    (with-session-lock (!)
+      (! (gethash variable *store*))))
+  
+  (defun (setf intercom-var) (value variable)
+    (with-session-lock (!)
+      (! (setf (gethash variable *store*) value))))
+#+end_src
+
+** remote procedures
+a remote procedure connects a string to a function to be called when a request is received to call the function with that name.  call-remote-procedure abstracts between the definition with strings or with symbols.
+
+#+begin_src lisp
+  (defun register-remote-procedure (name function)
+    "registers the remote procedure for <name> to be <function>."
+    (when (gethash name *remote-procedures*)
+      (warn "overwriting remote procedure for ~A" name))
+    (setf (gethash name *remote-procedures*) function))
+  
+  (defun get-remote-procedure (name)
+    "returns the remote procedure for <name> or nil if the procedure doesn't exist."
+    (gethash name *remote-procedures*))
+  
+  (defun call-remote-procedure (rid name &rest args)
+    "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as reference.  assumes the special variable *store* exists"
+    (assert (get-remote-procedure name))
+    (bordeaux-threads:make-thread
+     (let ((store *store*))
+       (lambda ()
+         (let ((*store* store)
+               (*rid* rid))
+           (start-rid *rid*)
+           (unwind-protect
+                (apply (get-remote-procedure name) args)
+             (with-session-lock (!)
+               (push rid (intercom-var 'rids-to-end)))))))
+     :name name))
+#+end_src
+
+some syntactic sugar to define remote procedures is obviously welcome.  this is handled in the following piece of code.
+
+#+begin_src lisp
+  (eval-when (:compile-toplevel :load-toplevel :execute)
+    (defun make-remote-procedure-lambda-function (arguments body)
+      "builds the s-expression representation for the lambda function which can be called for the definition of a remote procedure.  this handles the creation of the &key arguments."
+      (let* ((arguments (split-sequence:split-sequence '&key arguments))
+             (symbols (loop repeat (1- (length arguments)) collect (gensym "jsown-object"))))
+        `(lambda (,@(first arguments) ,@symbols)
+           ,@(if (rest arguments)
+                 `((let ,(loop for sym in symbols
+                            for args in (rest arguments)
+                            append (loop for arg in args
+                                      collect `(,arg (and (find ,(string-downcase (string arg))
+                                                                (jsown:keywords ,sym)
+                                                                :test #'string=)
+                                                          (jsown:val ,sym ,(string-downcase (string arg)))))))
+                     ,@body))
+                 body)))))
+  
+  (defmacro define-remote-procedure (name (&rest arguments) &body body)
+    "defines a remote procedure with <name> as the name to be called and <arguments> as the assumed arguments.  if <name> is a symbol with only non- lower-case-p characters, then it is converted to lowercase."
+    (flet ((translate-remote-procedure-name (name)
+             (if (and (symbolp name)
+                      (not (some #'lower-case-p (string name))))
+                 (string-downcase (string name))
+                 (string name))))
+      `(register-remote-procedure
+        ,(translate-remote-procedure-name name)
+        ,(make-remote-procedure-lambda-function arguments body))))
+#+end_src
+
+** request identifiers (rids)
+the rid is given by the javascript side.  it's a unique number to represent the current call to a function.  the rid is used to indicate running functions and to identify the source of results.  rids are stored in the session of the user.
+
+when the rid is removed from the list of rids of that user, the thread which is executed for that rid should gracefully exit.  the thread needs to check if its rid still exists periodically.  results should only be pushed onto the stack of results, if the rid is still active.
+
+#+begin_src lisp
+  (defun rid-active-p (rid)
+    "returns non-nil iff <rid> is active for the current user."
+    (find rid (intercom-var 'rids) :test #'string=))
+  
+  (defun start-rid (rid)
+    "sets <rid> to be active"
+    (with-session-lock (!)
+      (unless (rid-active-p rid)
+        (! (push rid (intercom-var 'rids))))))
+  
+  (defun remove-rid (rid)
+    "removes the <rid> from the list of active rids"
+    (with-session-lock (!)
+      (! (alexandria:removef (intercom-var 'rids) rid :test #'string=))))
+  
+  (defun in-active-remote-procedure-p ()
+    "returns non-nil if we are currently in a remote procedure with an active rid."
+    (and *store* *rid*
+         (rid-active-p *rid*)))
+#+end_src
+
+** message boxes
+the message box is a place in the session where requests can store messages for the client.  it has support for adding messages and for requesting the answers.  communication happens in jsown format.  we only care about messages for active rids are returned.
+
+#+begin_src lisp
+  (defun message (type body)
+    "sends a message to the client"
+    (with-session-lock (!)
+      (if (in-active-remote-procedure-p)
+          (let ((message (jsown:new-js
+                           ("type" type)
+                           ("rid" *rid*)
+                           ("body" body))))
+            (! (push message (intercom-var 'messages))))
+          (warn "can't send messages if not in an active remote procedure"))))
+  
+  (defun fetch-and-clear-messages ()
+    "fetches and clears the messages in the mailbox"
+    (with-session-lock (!)
+      (let (messages my-active-rids)
+        (flet ((rid-active-p (rid)
+                 "we overwrite the original rid-active-p because it doesn't work in this setting."
+                 (find rid my-active-rids :test #'string=)))
+          (!
+           ;; fetch the list of messages
+           (setf messages (intercom-var 'messages))
+           (setf (intercom-var 'messages) nil)
+           ;; correctly change the active rids
+           (setf my-active-rids (intercom-var 'rids))
+           (let ((rids-to-end (intercom-var 'rids-to-end)))
+             (setf (intercom-var 'rids)
+                   (remove-if (lambda (rid)
+                                (find rid rids-to-end :test #'string=))
+                              (intercom-var 'rids))))
+           (setf (intercom-var 'rids-to-end) nil))
+          (delete-if-not (lambda (message)
+                           (rid-active-p (jsown:val message "rid")))
+                         (reverse messages))))))
+#+end_src
+
+
+* communication with the client
+:PROPERTIES:
+:noweb-ref: client-talk
+:END:
+requests and polling are initiated by the client.  all requests are sent to /intercom/talk.  the request may contain the following arguments:
+
+- open :: array of json objects which describe the requests which the client makes in this request.
+- close :: array of rids which describe the requests which the client wants to cancel.
+
+all information about the client is stored in the client's session.  this means that all currently active requests (which aren't finished or haven't been canceled) are stored in the session and that all answers are stored in the session.  all responses are sent in json format.  the open and close requests are handled in separate functions.  the last function fetches all messages which should be sent to the client and converts them to the json format.
+
+#+begin_src lisp
+  (hunchentoot:define-easy-handler (talk :uri "/talk") ()
+    (in-intercom-session
+      (setf (hunchentoot:content-type*) "application/json")
+      (let ((open (hunchentoot:parameter "open"))
+            (close (hunchentoot:parameter "close")))
+        (when open
+          (dolist (request (jsown:parse open))
+            (perform-intercom-request request))) ;; [{rid,method,args}]
+        (when close
+          (dolist (rid (jsown:parse close))
+            (perform-close-request rid)))) ;; rids
+      (jsown:to-json (fetch-and-clear-messages))))
+#+end_src
+
+* handling requests
+:PROPERTIES:
+:noweb-ref: rpc
+:END:
+the client may send requests and may cancel requests.  the requests which are accepted must be defined in the software system.  we allow the application pogrammer to register requests and how they should be handled.  when handling a request, the programmer can send answers to the client.  when the request is finished, it is automatically closed.
+
+** performing intercom method call requests
+when an intercom request is performed, we receive the request in jso(w)n format.  the necessary information is parsed from the request and the registered request is called.
+
+#+begin_src lisp
+  (defun perform-intercom-request (jsown-request)
+    "performs an intercom request as described by <jsown-request>."
+    (apply #'call-remote-procedure
+           (jsown:val jsown-request "rid")
+           (jsown:val jsown-request "name")
+           (jsown:val jsown-request "args")))
+#+end_src
+
+** performing intercom close requests
+when a close request is handled, we must remove the rid.  the thread which is executing the request must manually find out whether or not it is still wanted and stop itself when it is safe to do so.
+
+#+begin_src lisp
+  (defun perform-close-request (rid)
+    "closes the request for the rid."
+    (remove-rid rid))
+#+end_src
+
+
+* bolting together the tangled file
+in this section all the code fragments are joined together for the lisp source file(s).
+
+#+begin_src lisp :tangle intercom.lisp
+  (in-package :intercom)
+  
+  <<data-structures>>
+  
+  <<client-talk>>
+  
+  <<rpc>>
+#+end_src
+
+
+* some examples
+
+#+begin_src lisp :tangle intercom-examples.lisp
+  (defpackage :intercom-examples
+    (:use :cl :intercom))
+  
+  (in-package :intercom-examples)
+  
+  (define-remote-procedure test (count base diff)
+    (loop repeat count
+       for time = (+ base (random diff))
+       do
+         (sleep time)
+         (message "bark" time))
+    (message "cemetary" "senna died! :`("))
+  
+  (define-remote-procedure echo (&key string count interval)
+    (loop repeat count
+       do (sleep (/ interval 1000)) ; we don't have a really good idea how good the sleep works
+         (message "value" string))
+    (message "ready" :true))
+  
+  (define-remote-procedure eval (string)
+    (message "ready" (eval (read string))))
+  
+  (defun rand-between (a b)
+    "returns a number between min and max"
+    (+ (min a b) (random (abs (- a b)))))
+  (define-remote-procedure timeout (count min-ms max-ms end-key)
+    (let ((start-time (get-internal-real-time)))
+      (loop for nr from 0 below count
+         for sleepytime = (rand-between (/ min-ms 1000) (/ max-ms 1000))
+         do (message "current-time" (jsown:new-js ("count" nr)
+                                                  ("timeout" (round (* sleepytime 1000)))
+                                                  ("total-time" (round (* (/ (- (get-internal-real-time) start-time)
+                                                                             internal-time-units-per-second)
+                                                                          1000))))))
+      (message end-key "ok")))
+#+end_src
+
+we add an asd files to make the loading of the examples a tad easier.
+
+#+begin_src lisp :tangle intercom-examples.asd
+  (asdf:defsystem :intercom-examples
+    :name "Intercom"
+    :author "Aad Versteden <madnificent@gmail.com>"
+    :version "0.0.1"
+    :maintainer "Aad Versteden <madnificent@gmail.com>"
+    :licence "MIT"
+    :description "Some example remote procedures for intercom"
+    :depends-on (intercom jsown)
+    :serial t
+    :components ((:file "intercom-examples")))
+#+end_src
