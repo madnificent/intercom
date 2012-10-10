@@ -1,0 +1,210 @@
+h1. Intercom
+
+Intercom is an easy to use library for high-level, bi-direcational communication between javascript and a lisp image with hunchentoot. It tries to optimize the amount of requests to the server and keeps the interface clean.
+
+Features:
+* JSON communication channel
+* automatically adapting polling speed
+* clean js and lisp RPC interface
+* multiple responses per request
+* requests can be canceled
+* bundled requests and responses
+
+h2. Simple Example
+
+As a simple example, we create a remote procedure call which sends you a <code>string</code> every <code>interval</code> seconds, <code>count</code> times.
+
+h3. Lisp implementation
+
+To define a remote procedure in the lisp backend, you use the macro <code>define-remote-procedure</code>.
+
+The first argument is the name of the remote procedure, which can be either a <code>string</code> or a <code>symbol</code> (which will be downcased). The following is an arg list, similar to what you would expect in a function definition. These values will be filled in with jsown objects (this can be lisp numbers, lisp lists, lisp strings or jsown representations of a javascript object).
+
+Inside the body of the RPC definition, you have access to the <code>message</code> function. This sends a response for _this_ RPC to the client. The first argument is a <code>type</code> of the response, the second argument is a jsown instance, which represents the <code>body</code>. Remember, many lisp primitives are jsown objects.
+
+<pre>
+<code>
+  (define-remote-procedure echo (string count interval)
+    (loop repeat count
+       do (sleep interval)
+	 (message "value" string))
+    (message "ready" :true))
+</code>
+</pre>
+
+h3. Javascript implementation
+
+The javascript side uses a ks.Intercom object to interact with the server. The intercom object is initialized with the url of the server. Requests are made to the /talk interface of the server.
+
+To call a remote procedure on the server, you use the call function of an intercom object. This call function expects an object with the following properties: 
+
+* *name* the name of the remote procedure to call
+* *args* the arguments to be passed to the remote procedure, as a list of JSON objects or javascript primitives.
+* *keys* when a message with this type is received, we stop listening for further requests for this RPC and call the onFinish function.
+* *onResponse* this function gets called when we receive a message from the server. The entire message object is passed in as an argument.
+* *onFinish* this function gets called when a message is received with a type in the <code>keys</code> list. It behaves exactly as the onResponse function.
+
+<pre>
+<code>
+  var intercom=new ks.Intercom({url:"/talk"});
+  intercom.call({name:"test",
+		    args:[10,2,1],
+		    keys:["ready"],
+		    onResponse:function(response){
+			console.log("intermediate response: " +JSON.stringify(response));
+		    },
+		    onFinish:function(response){
+			console.log("final response: "+ JSON.stringify(response));
+		    }
+		   });
+</code>
+</pre>
+
+The response argument that is passed in to the <code>onResponse</code> and <code>onFinish</code> function is a javascript object with the following properties:
+
+* *type* the type of response that was provided by the server. If this type is contained in the <code>keys</code> list of the call, the <code>onFinish</code> function is called instead of the <code>onResponse</code> function.
+* *body* the body of the response the actual content that is returned by the server.
+
+h3. What happens on the wire
+
+# Slow speed polling
+# intercom.call(...)
+# immediately send request + start high speed polling
+# responses arrive
+# ... 
+# final resonse arrives + start slow speed polling
+
+Or in prosaic format:
+
+When no requests are running on the server, we poll the server at a slow speed (configurable through the pollTimeSlow property of the intercom object in ms). When a call is made, this speed is increased (the interval when polling quickly is configurable through the pollTimeFast property of the intercom object). At every poll to the server, we requests all messages that the server wishes to send and send them to the javascript client. At the client side, these responses are then handled by the appropriate request. When no active requests remain, the polling speed is decreased again.
+
+h2. Javascript Features
+
+The API that is provided on the javascript side consists of the ks.Intercom class and its three public functions: <code>call</code>, <code>cancel</code> and <code>complete</code>.
+
+The <code>call</code> function has been described in some detail above. However, it is worth noting that the <code>call</code> function actually returns an object that can be used to cancel a request, as in the following example:
+
+<pre>
+<code>
+var request=intercom.call(
+       {name:"echo",
+	args:[{string:"foobar",
+	       count:3,
+	       interval:1}],
+	keys:["ready"],
+	onResponse:function(response){
+	    console.log("received single response with body: "+response.body);
+	},
+	onFinish:function(response){
+	    console.log("received final response with body: "+response.body);
+	}
+       });
+
+...
+    
+results.intercom.cancel(request);
+</code>
+</pre>
+
+The <code>cancel</code> function expects an object that was created by the <code>call</code> function. It sends a message to the server to inform it that no further messages are required for the given request and also calls the <code>complete</code> function on the intercom object.
+
+The <code>complete</code> function also expects an object that was created by the <code>call</code> function. It simply tells the intercom object to stop listening for messages for the given request. It does not inform the server about this, as it is assumed the server already knows (this happens for instance when the server sends a message with a finalizing type). Users are not recommended to use the complete function, they should use the keys list of a request instead.
+
+h2. Lisp Features
+
+the implementation on te lisp side offers two 'special' features when defininig remote procedure calls.
+
+h3. RPC name
+
+The name of the RPC can either be a string or a symbol. When a string is used, this name can be used (case sensitive) for identifying the RPC in the javascript call. When a symbol is used, it is downcased and the downcased name is used for the javascript call.
+
+Let's build two example functions and check when each one is called when.
+
+<pre>
+<code>
+(define-remote-procedure echo (string)
+  (message "result" string))
+
+(define-remote-procedure "eCHo" (string)
+  (message "result" (format nil "HELLO! ~A" string)))
+</code>
+</pre>
+
+The following javascript calls call both remote procedures.
+
+<pre>
+<code>
+intercom.call(
+     {name:"echo",
+      args:["Hello John"],
+      keys:["result"],
+      onFinish:function(response){
+          console.log("echo resulted in " + response.body);
+      }});
+
+intercom.call(
+     {name:"eCHo",
+      args:["Hello Jake"],
+      keys:["result"],
+      onFinish:function(response){
+          console.log("eCHo resulted in " + response.body);
+      }});
+</code>
+</pre>
+
+They result in these messages to be logged on the console:
+
+<pre>
+<code>
+echo resulted in Hello John
+eCHo resulted in HELLO! Hello Jake
+</code>
+</pre>
+
+h3. Keyword Arguments
+
+The <code>&key</code> argument in the parameter list in the definition of a remote procedure would traditionally be nonsensical when coming from a list of javascript objects. There's no way to generate keyword symbols from the javascript side. The use of the <code>&key</code> argument list destructures the javascript object and fetches the keys with that name from the javascript object. The name of the key to fetch is the lowercased name of the symbol. This allows for a slightly more javascript-style of passing complex arguments.
+
+Let's build two examples to show how this can make code i bit more readable.
+
+<pre>
+<code>
+(define-remote-procedure hello (friend-p &key first-name last-name)
+  (message "result"
+           (if friend-p
+               (format nil "Hello ~A ~A" first-name last-name)
+               (format nil "Hi ~A" first-name))))
+
+(define-remote-procedure format-buy-car (&key title first-name last-name &key make type engine)
+  (message "result"
+           (format nil "~A ~A ~A is buying a ~A ~A with a ~A in it."
+                   title first-name last-name make type engine)))
+</code>
+</pre>
+
+These examples can be called with the following javascript snippets:
+
+<pre>
+<code>
+intercom.call(
+     {name:"hello",
+      args:[false, {"first-name":"James", "last-name":"Dean"],
+      keys:["result"],
+      onFinish:function(response){
+          console.log(response.body);
+      }});
+
+intercom.call(
+     {name:"format-buy-car",
+      args:[{title:"Mr.", "first-name":"Bill", "last-name":"Gates"},
+            {make:"Seat",type:"Marbella",engine:"843cc"}],
+      keys:["result"],
+      onFinish:function(response){
+          console.log(response.body);
+      }});
+</code>
+</pre>
+
+h2. Performance Considerations
+
+For every RPC a new thread is built. If you have a lot active threads, this can hose your system.
