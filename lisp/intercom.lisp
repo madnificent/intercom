@@ -115,6 +115,11 @@
   "returns non-nil if we are currently in a remote procedure with an active rid."
   (and *store* *rid*
        (rid-active-p *rid*)))
+
+(defun activep ()
+  "returns non-nil if we are currently in an active remote procedure.
+  alias for in-active-remote-procedure-p."
+  (in-active-remote-procedure-p))
 (defun message (type body)
   "sends a message to the client"
   (with-session-lock (!)

@@ -1,9 +1,10 @@
 
 (asdf:defsystem :intercom
   :name "Intercom"
-  :author "Aad Versteden <madnificent@gmail.com>"
+  :author "Aad Versteden <aad@knowified.com>"
+  :author "Karel Kremer <karel@knowified.com>"
   :version "0.0.1"
-  :maintainer "Aad Versteden <madnificent@gmail.com>"
+  :maintainer "Aad Versteden <aad@knowified.com>"
   :licence "MIT"
   :description "Intercom allows bidirectional message passing between javascript and lisp."
   :depends-on (jsown hunchentoot bordeaux-threads split-sequence)

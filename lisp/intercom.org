@@ -16,9 +16,10 @@ intercom assumes the existence of hunchentoot and of jsown for communication wit
 #+begin_src lisp :tangle intercom.asd
   (asdf:defsystem :intercom
     :name "Intercom"
-    :author "Aad Versteden <madnificent@gmail.com>"
+    :author "Aad Versteden <aad@knowified.com>"
+    :author "Karel Kremer <karel@knowified.com>"
     :version "0.0.1"
-    :maintainer "Aad Versteden <madnificent@gmail.com>"
+    :maintainer "Aad Versteden <aad@knowified.com>"
     :licence "MIT"
     :description "Intercom allows bidirectional message passing between javascript and lisp."
     :depends-on (jsown hunchentoot bordeaux-threads split-sequence)
@@ -34,7 +35,7 @@ intercom is simple and consists of one package which exports everything.  we did
   (defpackage :intercom
     (:use :cl :jsown)
     (:export :define-remote-procedure
-             :message))
+             :message :activep))
 #+end_src
 
 * data structures
@@ -187,6 +188,11 @@ when the rid is removed from the list of rids of that user, the thread which is 
     "returns non-nil if we are currently in a remote procedure with an active rid."
     (and *store* *rid*
          (rid-active-p *rid*)))
+  
+  (defun activep ()
+    "returns non-nil if we are currently in an active remote procedure.
+    alias for in-active-remote-procedure-p."
+    (in-active-remote-procedure-p))
 #+end_src
 
 ** message boxes
