@@ -335,6 +335,8 @@ ks.Intercom.linear=function(intervalFrom,intervalTo,peakTime){
 // goes exponentially from base to peakSpeed every step ms; Base is in 10 ms
 ks.Intercom.exp=function(base,maxSteps,step){
     base=base|| 2;
+    maxSteps=maxSteps || 10;
+    step=step || 10;
     return function(timeSinceCall){
         var steps=timeSinceCall/step;
         if(maxSteps < steps){
@@ -342,4 +344,18 @@ ks.Intercom.exp=function(base,maxSteps,step){
         }
         return Math.pow(base,steps)*10; 
     }
+};
+// first fires a fast burst of burstcount requests, then polls slowly
+ks.Intercom.burst=function(fast,slow,burstCount){
+    fast = fast || 20;
+    slow = slow || 2000;
+    burstCount = burstCount || 10;
+
+    return function(timeSinceCall){
+        if(timeSinceCall/fast > burstCount){
+            return slow;
+        }else{
+            return fast;
+        }
+    };
 };
