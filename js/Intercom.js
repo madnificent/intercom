@@ -79,7 +79,7 @@ var intercomRecipe={
     /**
        marks the request with the given id as complete. Providing a list of ids is also supported.
        NOTE: this function does NOT inform the server that the request should no longer be remembered
-    ,*/
+    */
     complete:function(requestId){
         if(typeof requestId=="object" && requestId.length && requestId.push){
             for(var i=0, id;id=requestId[i];i++){
@@ -190,7 +190,7 @@ var intercomRecipe={
     //* calculates the pollspeed based on the minSpeed and getSpeedAfterTime properties of the open requests
     getPollSpeed:function(){
         var openRequests=false;
-        var minSpeedRequired=this.defaultPollSpeed;
+        var minSpeedRequired=Math.max(0,Math.min(this.defaultPollSpeed,10000));
         for(var prop in this.currentRequests){
             openRequests=true;
             var requestSpeed=Number.MAX_VALUE;

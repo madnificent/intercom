@@ -83,6 +83,8 @@ The fast pollspeed when there are open requests is obtained by taking the minimu
 * the minimum of the result of the getSpeedAfterTime function of the open requests if such a function is specified. This function accepts a time in ms since the request was accepted and returns the pollspeed in ms.
 * the defaultPollSpeed property of the intercom object in ms.
 
+Please note that the polling mechanism is used as a heartbeat as well. As a result, we have had to limit the minimum pollSpeed to one poll per ten seconds. Values of more than 10000 will be interpreted as being equal to the maximum. Values smaller than zero will be assumed equal to zero (poll as soon as possible).
+
 h2. Javascript Features
 
 The API that is provided on the javascript side consists of the ks.Intercom class and its three public functions: <code>call</code>, <code>cancel</code> and <code>complete</code>.
