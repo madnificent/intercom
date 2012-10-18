@@ -195,11 +195,14 @@ var intercomRecipe={
             openRequests=true;
             var requestSpeed=Number.MAX_VALUE;
             var request=this.currentRequests[prop];
-            if(request.minSpeed !=undefined){
+            if(request.minSpeed !=undefined && request.minSpeed>=0){
                 requestSpeed=request.minSpeed;
             }
             if(request.getSpeedAfterTime){
-                requestSpeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+                var funspeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+                if(funspeed>=0){
+                    requestSpeed=funspeed;
+                }
             }
             minSpeedRequired=Math.min(minSpeedRequired,requestSpeed);
         }
@@ -248,7 +251,13 @@ var intercomRecipe={
         
         httpRequest.open('GET', this.url+"?"+(open.length>0?"open="+open:"")+(close.length>0?"&close="+close:""));
         httpRequest.setRequestHeader('Content-Type','application/json');
-        httpRequest.send(null);    
+        try{
+            httpRequest.send(null);    
+        }catch(error){
+            if(console && console.log){
+                console.log(error);
+            }
+        }
     },
     //* handles the response of the server
     handleReadyStateChanged:function(request){
@@ -311,3 +320,42 @@ var intercomRecipe={
 for(var prop in intercomRecipe){
     ks.Intercom.prototype[prop]=intercomRecipe[prop];
 }
+
+// goes linearly from the from interval to the to interval at peaktime
+ks.Intercom.linear=function(intervalFrom,intervalTo,peakTime){
+    intervalFrom=intervalFrom || 10;
+    intervalTo=intervalTo || 2000;
+    peakTime= peakTime || 60000;
+
+    var step=(intervalTo-intervalFrom)/peakTime;
+    return function(timeSinceCall){
+        return intervalFrom+timeSinceCall*step;
+    };
+};
+// goes exponentially from base to peakSpeed every step ms; Base is in 10 ms
+ks.Intercom.exp=function(base,maxSteps,step){
+    base=base|| 2;
+    maxSteps=maxSteps || 10;
+    step=step || 10;
+    return function(timeSinceCall){
+        var steps=timeSinceCall/step;
+        if(maxSteps < steps){
+            steps=maxSteps;
+        }
+        return Math.pow(base,steps)*10; 
+    }
+};
+// first fires a fast burst of burstcount requests, then polls slowly
+ks.Intercom.burst=function(fast,slow,burstCount){
+    fast = fast || 20;
+    slow = slow || 2000;
+    burstCount = burstCount || 10;
+
+    return function(timeSinceCall){
+        if(timeSinceCall/fast > burstCount){
+            return slow;
+        }else{
+            return fast;
+        }
+    };
+};

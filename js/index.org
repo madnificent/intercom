@@ -79,6 +79,8 @@ The connection with the server is managed through the following javascript objec
   for(var prop in intercomRecipe){
       ks.Intercom.prototype[prop]=intercomRecipe[prop];
   }
+  
+  <<define-pollspeedfunctions>>
 #+END_SRC
 
 * Using the intercom
@@ -201,16 +203,63 @@ This time is the minimum of the following properties:
           openRequests=true;
           var requestSpeed=Number.MAX_VALUE;
           var request=this.currentRequests[prop];
-          if(request.minSpeed !=undefined){
+          if(request.minSpeed !=undefined && request.minSpeed>=0){
               requestSpeed=request.minSpeed;
           }
           if(request.getSpeedAfterTime){
-              requestSpeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+              var funspeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+              if(funspeed>=0){
+                  requestSpeed=funspeed;
+              }
           }
           minSpeedRequired=Math.min(minSpeedRequired,requestSpeed);
       }
       return minSpeedRequired;
   }  
+#+END_SRC
+
+For your convenience, some pollspeed functions are defined in the Intercom class:
+
+#+name:define-pollspeedfunctions
+#+BEGIN_SRC js
+  // goes linearly from the from interval to the to interval at peaktime
+  ks.Intercom.linear=function(intervalFrom,intervalTo,peakTime){
+      intervalFrom=intervalFrom || 10;
+      intervalTo=intervalTo || 2000;
+      peakTime= peakTime || 60000;
+  
+      var step=(intervalTo-intervalFrom)/peakTime;
+      return function(timeSinceCall){
+          return intervalFrom+timeSinceCall*step;
+      };
+  };
+  // goes exponentially from base to peakSpeed every step ms; Base is in 10 ms
+  ks.Intercom.exp=function(base,maxSteps,step){
+      base=base|| 2;
+      maxSteps=maxSteps || 10;
+      step=step || 10;
+      return function(timeSinceCall){
+          var steps=timeSinceCall/step;
+          if(maxSteps < steps){
+              steps=maxSteps;
+          }
+          return Math.pow(base,steps)*10; 
+      }
+  };
+  // first fires a fast burst of burstcount requests, then polls slowly
+  ks.Intercom.burst=function(fast,slow,burstCount){
+      fast = fast || 20;
+      slow = slow || 2000;
+      burstCount = burstCount || 10;
+  
+      return function(timeSinceCall){
+          if(timeSinceCall/fast > burstCount){
+              return slow;
+          }else{
+              return fast;
+          }
+      };
+  };
 #+END_SRC
 * Talking to the server
 All communication with the server happens through a function that is called talk. This function can receive optional open or close requests that are sent to the server. Only one request can be in process at any given time. New requests that are made in the time in between are stored in the requestStack. When the ongoing request finishes, the requestStack is examined. If it is not empty, a new talk call is made where all outstanding requests are merged into one call.
@@ -333,7 +382,13 @@ The actual interaction with the server happens through http requests. This lower
       
       httpRequest.open('GET', this.url+"?"+(open.length>0?"open="+open:"")+(close.length>0?"&close="+close:""));
       httpRequest.setRequestHeader('Content-Type','application/json');
-      httpRequest.send(null);    
+      try{
+          httpRequest.send(null);    
+      }catch(error){
+          if(console && console.log){
+              console.log(error);
+          }
+      }
   },
   //* handles the response of the server
   handleReadyStateChanged:function(request){
