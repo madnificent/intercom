@@ -36,7 +36,8 @@ intercom is simple and consists of one package which exports everything.  we did
     (:use :cl :jsown)
     (:export :define-remote-procedure
              :message :activep
-             :*remote-procedure-context*))
+             :*remote-procedure-context*
+             :*watchdog-timeout*))
 #+end_src
 
 * data structures
@@ -58,6 +59,9 @@ we define the parameters separately, this makes it clear what all the relevant p
   
   (defparameter *store* nil
     "contains a key-value store for the variables which *should* be in the session")
+  
+  (defparameter *watchdog-timeout* 600
+    "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
 #+end_src
 
 ** user session
@@ -77,11 +81,12 @@ the session of the user will be contacted on various occasions, in multiple thre
     "executes a hunchentoot request in an environment in which *store* is bound to the current store."
     (let ((store-exists-p (gensym "store-exists-p")))
       `(progn (hunchentoot:start-session)
-              (let ((,store-exists-p (hunchentoot:session-value 'store))
+              (let ((,store-exists-p (hunchentoot:session-value 'store hunchentoot:*session*))
                     *store*)
                 (unless ,store-exists-p
-                  (setf (hunchentoot:session-value 'store) (make-hash-table :synchronized t)))
-                (setf *store* (hunchentoot:session-value 'store))
+                  (setf (hunchentoot:session-value 'store hunchentoot:*session*)
+                        (make-hash-table :synchronized t)))
+                (setf *store* (hunchentoot:session-value 'store hunchentoot:*session*))
                 (unless ,store-exists-p
                   (setf (gethash 'intercom-session-lock *store*)
                         (bordeaux-threads:make-lock "intercom session lock")))
@@ -205,7 +210,8 @@ when the rid is removed from the list of rids of that user, the thread which is 
   (defun in-active-remote-procedure-p ()
     "returns non-nil if we are currently in a remote procedure with an active rid."
     (and *store* *rid*
-         (rid-active-p *rid*)))
+         (rid-active-p *rid*)
+         (channel-activep)))
   
   (defun activep ()
     "returns non-nil if we are currently in an active remote procedure.
@@ -267,6 +273,7 @@ all information about the client is stored in the client's session.  this means 
 #+begin_src lisp
   (hunchentoot:define-easy-handler (talk :uri "/talk") ()
     (in-intercom-session
+      (watchdog)
       (setf (hunchentoot:content-type*) "application/json")
       (let ((open (hunchentoot:parameter "open"))
             (close (hunchentoot:parameter "close")))
@@ -278,6 +285,27 @@ all information about the client is stored in the client's session.  this means 
             (perform-close-request rid)))) ;; rids
       (jsown:to-json (fetch-and-clear-messages))))
 #+end_src
+
+* communication channel timeout
+:PROPERTIES:
+:noweb-ref: timeouts
+:END:
+when clients get disconnected (either by closing the browser window or by a failed network connection), we have no way to send a request to the server to indicate this.  by logging the time when a user has made a request, we have an added check to ensure a thread is still running.
+
+this system will only indicate to the threads that they may stop running.  it will not remove each of the threads, nor will it remove the store in the session.
+
+#+begin_src lisp
+  (defun watchdog ()
+    "indicates the client has phoned home"
+    (setf (intercom-var 'watchdog)
+          (get-universal-time)))
+  
+  (defun channel-activep ()
+    "returns non-nil iff the last message we received from the client isn't too long ago"
+    (>= (+ (intercom-var 'watchdog) *watchdog-timeout*)
+        (get-universal-time)))
+#+end_src
+
 
 * handling requests
 :PROPERTIES:
@@ -316,6 +344,8 @@ in this section all the code fragments are joined together for the lisp source f
   <<data-structures>>
   
   <<client-talk>>
+  
+  <<timeouts>>
   
   <<rpc>>
 #+end_src

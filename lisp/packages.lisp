@@ -3,4 +3,5 @@
   (:use :cl :jsown)
   (:export :define-remote-procedure
            :message :activep
-           :*remote-procedure-context*))
+           :*remote-procedure-context*
+           :*watchdog-timeout*))

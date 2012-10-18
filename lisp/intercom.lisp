@@ -9,6 +9,9 @@
 
 (defparameter *store* nil
   "contains a key-value store for the variables which *should* be in the session")
+
+(defparameter *watchdog-timeout* 600
+  "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
 (defmacro with-session-lock ((protection-symbol) &body body)
   "executes <body> in a piece of code in which the session is locked"
   `(progn
@@ -22,11 +25,12 @@
   "executes a hunchentoot request in an environment in which *store* is bound to the current store."
   (let ((store-exists-p (gensym "store-exists-p")))
     `(progn (hunchentoot:start-session)
-            (let ((,store-exists-p (hunchentoot:session-value 'store))
+            (let ((,store-exists-p (hunchentoot:session-value 'store hunchentoot:*session*))
                   *store*)
               (unless ,store-exists-p
-                (setf (hunchentoot:session-value 'store) (make-hash-table :synchronized t)))
-              (setf *store* (hunchentoot:session-value 'store))
+                (setf (hunchentoot:session-value 'store hunchentoot:*session*)
+                      (make-hash-table :synchronized t)))
+              (setf *store* (hunchentoot:session-value 'store hunchentoot:*session*))
               (unless ,store-exists-p
                 (setf (gethash 'intercom-session-lock *store*)
                       (bordeaux-threads:make-lock "intercom session lock")))
@@ -131,7 +135,8 @@
 (defun in-active-remote-procedure-p ()
   "returns non-nil if we are currently in a remote procedure with an active rid."
   (and *store* *rid*
-       (rid-active-p *rid*)))
+       (rid-active-p *rid*)
+       (channel-activep)))
 
 (defun activep ()
   "returns non-nil if we are currently in an active remote procedure.
@@ -173,6 +178,7 @@
 
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
+    (watchdog)
     (setf (hunchentoot:content-type*) "application/json")
     (let ((open (hunchentoot:parameter "open"))
           (close (hunchentoot:parameter "close")))
@@ -183,6 +189,16 @@
         (dolist (rid (jsown:parse close))
           (perform-close-request rid)))) ;; rids
     (jsown:to-json (fetch-and-clear-messages))))
+
+(defun watchdog ()
+  "indicates the client has phoned home"
+  (setf (intercom-var 'watchdog)
+        (get-universal-time)))
+
+(defun channel-activep ()
+  "returns non-nil iff the last message we received from the client isn't too long ago"
+  (>= (+ (intercom-var 'watchdog) *watchdog-timeout*)
+      (get-universal-time)))
 
 (defun perform-intercom-request (jsown-request)
   "performs an intercom request as described by <jsown-request>."
