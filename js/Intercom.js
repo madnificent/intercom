@@ -320,3 +320,26 @@ var intercomRecipe={
 for(var prop in intercomRecipe){
     ks.Intercom.prototype[prop]=intercomRecipe[prop];
 }
+
+// goes linearly from the from interval to the to interval at peaktime
+ks.Intercom.linear=function(intervalFrom,intervalTo,peakTime){
+    intervalFrom=intervalFrom || 10;
+    intervalTo=intervalTo || 2000;
+    peakTime= peakTime || 60000;
+
+    var step=(intervalTo-intervalFrom)/peakTime;
+    return function(timeSinceCall){
+        return intervalFrom+timeSinceCall*step;
+    };
+};
+// goes exponentially from base to peakSpeed every step ms; Base is in 10 ms
+ks.Intercom.exp=function(base,maxSteps,step){
+    base=base|| 2;
+    return function(timeSinceCall){
+        var steps=timeSinceCall/step;
+        if(maxSteps < steps){
+            steps=maxSteps;
+        }
+        return Math.pow(base,steps)*10; 
+    }
+};
