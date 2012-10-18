@@ -38,10 +38,8 @@ var intercomRecipe={
     //* whether or not to log all incoming results
     debug:false,    
     url:"http://server/intercom/talk",
-    //* how fast the server is polled when there are no outstanding requests in ms
-    pollTimeSlow:2000,
-    //* how fast the server is polled when there are outstanding requests in ms
-    pollTimeFast:100,
+    //* how fast the server is polled when no open request specified a pollspeed
+    defaultPollSpeed:2000,
 
     //* current outstanding requests
     currentRequests:null,
@@ -51,6 +49,7 @@ var intercomRecipe={
     call:function(request){
         var id=this.newRequestId(request);
         request.rid=id;
+        request.timeReceived=new Date().getTime();
         
         this.currentRequests[id]=request;
     
@@ -151,11 +150,11 @@ var intercomRecipe={
             this.talk(followUpRequest);
         }
     },
-    halted:false,
+    stopped:false,
     pollTimeout:null,
-    //* polls the server for a new message and queues a new request after either pollTimeSlow ms if no requests remain to be handled or pollTimeFast ms if there are requests that should be handled. (args are the arguments to be passed in to the talk function
+    //* polls the server for a new message and queues a new request after getPollSpeed ms. (args are the arguments to be passed in to the talk function
     pollServer:function(args){
-        if(this.halted){
+        if(this.stopped){
             return;
         }
     
@@ -165,22 +164,47 @@ var intercomRecipe={
         
         this.talk(args);
     
-        var openRequests=false;
-        for(var prop in this.currentRequests){
-            openRequests=true;
-            break;
-        }
-    
         var context=this;
         var nextPoll=function(){
             context.pollServer.call(context);
         };
-        
-        this.pollTimeout=setTimeout(nextPoll,openRequests?this.pollTimeFast:this.pollTimeSlow);
+    
+        var pollSpeed=this.getPollSpeed();
+        this.pollTimeout=setTimeout(nextPoll,pollSpeed);
     },
+    //* stops polling the server
     stopPolling:function(){
-        this.halted=true;
+        this.stopped=true;
+        if(this.pollTimeout!=null){
+            clearTimeout(this.pollTimeout);
+            this.pollTimeout=null;
+        }
     },
+    //* resumes polling the server
+    startPolling:function(){
+        this.stopped=false;
+        if(this.pollTimeout==null){
+            this.pollServer();
+        }
+    },
+    //* calculates the pollspeed based on the minSpeed and getSpeedAfterTime properties of the open requests
+    getPollSpeed:function(){
+        var openRequests=false;
+        var minSpeedRequired=this.defaultPollSpeed;
+        for(var prop in this.currentRequests){
+            openRequests=true;
+            var requestSpeed=Number.MAX_VALUE;
+            var request=this.currentRequests[prop];
+            if(request.minSpeed !=undefined){
+                requestSpeed=request.minSpeed;
+            }
+            if(request.getSpeedAfterTime){
+                requestSpeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+            }
+            minSpeedRequired=Math.min(minSpeedRequired,requestSpeed);
+        }
+        return minSpeedRequired;
+    }  ,
     //* handles all new information that the server sends our way.
     respondToRequests:function(responses){
         if(this.debug && console && console.log && responses.length>0){
@@ -192,9 +216,11 @@ var intercomRecipe={
             var request=this.currentRequests[requestId];
             if(request){
                 if(request.keys && request.keys.indexOf(response.type)>=0){
-                    request.onFinish(response);
+                    if(request.onFinish){
+                        request.onFinish(response);
+                    }
                     this.complete(requestId);
-                }else{
+                }else if(request.onResponse){
                     request.onResponse(response);
                 }
                 

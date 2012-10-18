@@ -76,7 +76,12 @@ h3. What happens on the wire
 
 Or in prosaic format:
 
-When no requests are running on the server, we poll the server at a slow speed (configurable through the pollTimeSlow property of the intercom object in ms). When a call is made, this speed is increased (the interval when polling quickly is configurable through the pollTimeFast property of the intercom object). At every poll to the server, we requests all messages that the server wishes to send and send them to the javascript client. At the client side, these responses are then handled by the appropriate request. When no active requests remain, the polling speed is decreased again.
+When no requests are running on the server, we poll the server at a slow speed (configurable through the defaultPollSpeed property of the intercom object in ms). When a call is made, this speed can be increased. At every poll to the server, we requests all messages that the server wishes to send and send them to the javascript client. At the client side, these responses are then handled by the appropriate request. When no active requests remain, the polling speed is decreased again.
+
+The fast pollspeed when there are open requests is obtained by taking the minimum of the following properties:
+* the minimum of the minSpeed properties of the open requests (for requests that specify this property) in ms.
+* the minimum of the result of the getSpeedAfterTime function of the open requests if such a function is specified. This function accepts a time in ms since the request was accepted and returns the pollspeed in ms.
+* the defaultPollSpeed property of the intercom object in ms.
 
 h2. Javascript Features
 

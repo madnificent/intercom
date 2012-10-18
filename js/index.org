@@ -43,10 +43,8 @@ The connection with the server is managed through the following javascript objec
       //* whether or not to log all incoming results
       debug:false,    
       url:"http://server/intercom/talk",
-      //* how fast the server is polled when there are no outstanding requests in ms
-      pollTimeSlow:2000,
-      //* how fast the server is polled when there are outstanding requests in ms
-      pollTimeFast:100,
+      //* how fast the server is polled when no open request specified a pollspeed
+      defaultPollSpeed:2000,
   
       //* current outstanding requests
       currentRequests:null,
@@ -107,6 +105,7 @@ Using the intercom happens through the following interface.
   call:function(request){
       var id=this.newRequestId(request);
       request.rid=id;
+      request.timeReceived=new Date().getTime();
       
       this.currentRequests[id]=request;
   
@@ -150,13 +149,18 @@ Using the intercom happens through the following interface.
 * The polling scheme
 It is possible that the server sends us messages autonomously. Because we have no way of knowing when such a message is available, we need to poll the server every n milliseconds. The time between such poll requests is much shorter when we are waiting for a response to one of our requests (these are not necessarily handled immediately).
 
+This time is the minimum of the following properties:
+- the intercom's defaultPollSpeed property in ms
+- the minimum of the minPollSpeed properties of each open request (if specified) in ms.
+- the minimum of the result of the getSpeedAfterTime function of each open request (if specified). This function takes as argument the time in ms since the request was received and returns a pollTime in ms.
+
 #+name:polling
 #+BEGIN_SRC js
-  halted:false,
+  stopped:false,
   pollTimeout:null,
-  //* polls the server for a new message and queues a new request after either pollTimeSlow ms if no requests remain to be handled or pollTimeFast ms if there are requests that should be handled. (args are the arguments to be passed in to the talk function
+  //* polls the server for a new message and queues a new request after getPollSpeed ms. (args are the arguments to be passed in to the talk function
   pollServer:function(args){
-      if(this.halted){
+      if(this.stopped){
           return;
       }
   
@@ -166,22 +170,47 @@ It is possible that the server sends us messages autonomously. Because we have n
       
       this.talk(args);
   
-      var openRequests=false;
-      for(var prop in this.currentRequests){
-          openRequests=true;
-          break;
-      }
-  
       var context=this;
       var nextPoll=function(){
           context.pollServer.call(context);
       };
-      
-      this.pollTimeout=setTimeout(nextPoll,openRequests?this.pollTimeFast:this.pollTimeSlow);
+  
+      var pollSpeed=this.getPollSpeed();
+      this.pollTimeout=setTimeout(nextPoll,pollSpeed);
   },
+  //* stops polling the server
   stopPolling:function(){
-      this.halted=true;
-  }
+      this.stopped=true;
+      if(this.pollTimeout!=null){
+          clearTimeout(this.pollTimeout);
+          this.pollTimeout=null;
+      }
+  },
+  //* resumes polling the server
+  startPolling:function(){
+      this.stopped=false;
+      if(this.pollTimeout==null){
+          this.pollServer();
+      }
+  },
+  //* calculates the pollspeed based on the minSpeed and getSpeedAfterTime properties of the open requests
+  getPollSpeed:function(){
+      var openRequests=false;
+      var minSpeedRequired=this.defaultPollSpeed;
+      for(var prop in this.currentRequests){
+          openRequests=true;
+          var requestSpeed=Number.MAX_VALUE;
+          var request=this.currentRequests[prop];
+          if(request.minSpeed !=undefined){
+              requestSpeed=request.minSpeed;
+          }
+          if(request.getSpeedAfterTime){
+              requestSpeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+          }
+          minSpeedRequired=Math.min(minSpeedRequired,requestSpeed);
+      }
+      return minSpeedRequired;
+  }  
 #+END_SRC
 * Talking to the server
 All communication with the server happens through a function that is called talk. This function can receive optional open or close requests that are sent to the server. Only one request can be in process at any given time. New requests that are made in the time in between are stored in the requestStack. When the ongoing request finishes, the requestStack is examined. If it is not empty, a new talk call is made where all outstanding requests are merged into one call.
@@ -266,9 +295,11 @@ The server responds to a poll by sending a javascript object that holds for ever
           var request=this.currentRequests[requestId];
           if(request){
               if(request.keys && request.keys.indexOf(response.type)>=0){
-                  request.onFinish(response);
+                  if(request.onFinish){
+                      request.onFinish(response);
+                  }
                   this.complete(requestId);
-              }else{
+              }else if(request.onResponse){
                   request.onResponse(response);
               }
               
@@ -367,7 +398,7 @@ This is an example site that uses the intercom class
 #+BEGIN_SRC js
   ready=function(){
       window.intercom=new ks.Intercom({url:"/talk",
-                                       pollTimeFast:500});
+                                       :500});
   
       var requestId=intercom.call({name:"test",
                                    args:[10,2,1],
@@ -491,6 +522,7 @@ The standard case listens for three echos. It checks whether all echos have been
                    results.error="content did not have expected format";
                }
            },
+           minSpeed:100,
            onFinish:function(response){
                if(response.body!=true){
                    results.error="final content did not have expected format";
@@ -534,6 +566,7 @@ The standard case listens for three echos. It checks whether all echos have been
                   count:3,
                   interval:interval}],
            keys:["ready"],
+           minSpeed:100,
            onResponse:function(response){
                results.count+=1;
                if(response.type!="value"|| response.body!=content){
@@ -582,6 +615,7 @@ Upon destruction, all active connections should be cancelled.
   
       results.firstId=intercom.call(
           {name:"echo",
+           minSpeed:100,
            args:[{string:content,
                   count:3,
                   interval:interval}],
@@ -602,6 +636,7 @@ Upon destruction, all active connections should be cancelled.
       var secondContent="echo2";
       results.secondId=intercom.call(
           {name:"echo",
+           minSpeed:100,
            args:[{string:secondContent,
                   count:3,
                   interval:interval}],
@@ -659,6 +694,7 @@ The server should not mess up responses when there are quite a lot of them going
                   count:3,
                   interval:1000}],
            keys:["ready"],
+           minSpeed:100,
            onResponse:function(response){
                results.count+=1;
                if(response.type!="value"|| response.body!=content){

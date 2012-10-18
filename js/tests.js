@@ -62,6 +62,7 @@ function testStandard(results){
                  results.error="content did not have expected format";
              }
          },
+         minSpeed:100,
          onFinish:function(response){
              if(response.body!=true){
                  results.error="final content did not have expected format";
@@ -98,6 +99,7 @@ function testCancel(results){
                 count:3,
                 interval:interval}],
          keys:["ready"],
+         minSpeed:100,
          onResponse:function(response){
              results.count+=1;
              if(response.type!="value"|| response.body!=content){
@@ -139,6 +141,7 @@ function testDestroy(results){
 
     results.firstId=intercom.call(
         {name:"echo",
+         minSpeed:100,
          args:[{string:content,
                 count:3,
                 interval:interval}],
@@ -159,6 +162,7 @@ function testDestroy(results){
     var secondContent="echo2";
     results.secondId=intercom.call(
         {name:"echo",
+         minSpeed:100,
          args:[{string:secondContent,
                 count:3,
                 interval:interval}],
@@ -210,6 +214,7 @@ function testFloodSingle(results){
                 count:3,
                 interval:1000}],
          keys:["ready"],
+         minSpeed:100,
          onResponse:function(response){
              results.count+=1;
              if(response.type!="value"|| response.body!=content){
