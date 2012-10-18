@@ -195,11 +195,14 @@ var intercomRecipe={
             openRequests=true;
             var requestSpeed=Number.MAX_VALUE;
             var request=this.currentRequests[prop];
-            if(request.minSpeed !=undefined){
+            if(request.minSpeed !=undefined && request.minSpeed>=0){
                 requestSpeed=request.minSpeed;
             }
             if(request.getSpeedAfterTime){
-                requestSpeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+                var funspeed=request.getSpeedAfterTime(new Date().getTime() -request.timeReceived);
+                if(funspeed>=0){
+                    requestSpeed=funspeed;
+                }
             }
             minSpeedRequired=Math.min(minSpeedRequired,requestSpeed);
         }
@@ -248,7 +251,13 @@ var intercomRecipe={
         
         httpRequest.open('GET', this.url+"?"+(open.length>0?"open="+open:"")+(close.length>0?"&close="+close:""));
         httpRequest.setRequestHeader('Content-Type','application/json');
-        httpRequest.send(null);    
+        try{
+            httpRequest.send(null);    
+        }catch(error){
+            if(console && console.log){
+                console.log(error);
+            }
+        }
     },
     //* handles the response of the server
     handleReadyStateChanged:function(request){
