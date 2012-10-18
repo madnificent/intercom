@@ -55,19 +55,36 @@
   "returns the remote procedure for <name> or nil if the procedure doesn't exist."
   (gethash name *remote-procedures*))
 
+(defparameter *remote-procedure-context* nil
+  "should contain an alist in which the keywords are special variables and the values
+   are evaluated (in the creating thread) each time a remote procedure is built.
+   this allows you to pass special variables.")
+
+(defun thread-initial-bindings ()
+  "calculates the initial bindings for the current thread.  this consists of whatever
+   is available in bordeaux-threads:*initial-bindings*, but with what
+   *remote-procedure* contains in front of it (in which the values are evaluated)."
+  (concatenate 'list
+               (loop for (k . v) in *remote-procedure-context*
+                  collect (cons k (eval v)))
+               bordeaux-threads:*default-special-bindings*))
+
 (defun call-remote-procedure (rid name &rest args)
   "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as reference.  assumes the special variable *store* exists"
   (assert (get-remote-procedure name))
   (bordeaux-threads:make-thread
-   (let ((store *store*))
+   (let ((store *store*)
+         (session hunchentoot:*session*))
      (lambda ()
        (let ((*store* store)
-             (*rid* rid))
+             (*rid* rid)
+             (hunchentoot:*session* session))
          (start-rid *rid*)
          (unwind-protect
               (apply (get-remote-procedure name) args)
            (with-session-lock (!)
              (push rid (intercom-var 'rids-to-end)))))))
+   :initial-bindings (thread-initial-bindings)
    :name name))
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun make-remote-procedure-lambda-function (arguments body)

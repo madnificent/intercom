@@ -2,4 +2,5 @@
 (defpackage :intercom
   (:use :cl :jsown)
   (:export :define-remote-procedure
-           :message :activep))
+           :message :activep
+           :*remote-procedure-context*))
