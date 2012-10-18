@@ -306,6 +306,7 @@ var intercomRecipe={
 
     //* upon destruction, all open requests are cancelled.
     destroy:function(){
+        this.talking=false;
         var rids=[];
         for(var idx in this.currentRequests){
             rids.push(this.currentRequests[idx].rid);
