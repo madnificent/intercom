@@ -77,7 +77,7 @@ asyncTest({
                error:null,
                requestFinished:true},
     toTest: testStandard,
-    duration: 4000,
+    duration: 40000,
     initialResults:{count:0,
                     error:null},
     after:function(specs){
