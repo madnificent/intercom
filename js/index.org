@@ -60,7 +60,7 @@ The connection with the server is managed through the following javascript objec
       newRequestId:function(request){
           // assume a request can run max thirty days and that it is improbable that more than 10000 requests are made per ms per session.
           var id=new Date().getTime()%(this.MONTH)*1000000+Math.floor(Math.random()*1000000);
-          return id+"";
+          return "k"+id+"";
       },
   
       //* upon destruction, all open requests are cancelled.
@@ -138,7 +138,7 @@ Using the intercom happens through the following interface.
   /**
      marks the request with the given id as complete. Providing a list of ids is also supported.
      NOTE: this function does NOT inform the server that the request should no longer be remembered
-  */
+  ,*/
   complete:function(requestId){
       if(typeof requestId=="object" && requestId.length && requestId.push){
           for(var i=0, id;id=requestId[i];i++){
@@ -362,6 +362,8 @@ The server responds to a poll by sending a javascript object that holds for ever
 
 * Low-level server interaction
 The actual interaction with the server happens through http requests. This lower layer should not be used outside of the intercom object.
+
+NOTE: IE stubbornly caches http requests, even if you tell it not to. As a result, each request also sends a time parameter to the server.
 #+name:low-level-interaction
 #+BEGIN_SRC js
   //* sends a http request to the server
@@ -380,8 +382,11 @@ The actual interaction with the server happens through http requests. This lower
   
       var open=requestObject.open?JSON.stringify(requestObject.open):[];
       var close=requestObject.close?JSON.stringify(requestObject.close):[];
+  
+      var randomSize=100000;
+      var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
       
-      httpRequest.open('GET', this.url+"?"+(open.length>0?"open="+open:"")+(close.length>0?"&close="+close:""));
+      httpRequest.open('GET', this.url+"?time="+disableCache+(open.length>0?"&open="+open:"")+(close.length>0?"&close="+close:""));
       httpRequest.setRequestHeader('Content-Type','application/json');
       try{
           httpRequest.send(null);    

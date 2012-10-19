@@ -79,7 +79,7 @@ var intercomRecipe={
     /**
        marks the request with the given id as complete. Providing a list of ids is also supported.
        NOTE: this function does NOT inform the server that the request should no longer be remembered
-    */
+    ,*/
     complete:function(requestId){
         if(typeof requestId=="object" && requestId.length && requestId.push){
             for(var i=0, id;id=requestId[i];i++){
@@ -248,8 +248,11 @@ var intercomRecipe={
     
         var open=requestObject.open?JSON.stringify(requestObject.open):[];
         var close=requestObject.close?JSON.stringify(requestObject.close):[];
+    
+        var randomSize=100000;
+        var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
         
-        httpRequest.open('GET', this.url+"?"+(open.length>0?"open="+open:"")+(close.length>0?"&close="+close:""));
+        httpRequest.open('GET', this.url+"?time="+disableCache+(open.length>0?"&open="+open:"")+(close.length>0?"&close="+close:""));
         httpRequest.setRequestHeader('Content-Type','application/json');
         try{
             httpRequest.send(null);    
@@ -301,7 +304,7 @@ var intercomRecipe={
     newRequestId:function(request){
         // assume a request can run max thirty days and that it is improbable that more than 10000 requests are made per ms per session.
         var id=new Date().getTime()%(this.MONTH)*1000000+Math.floor(Math.random()*1000000);
-        return id+"";
+        return "k"+id+"";
     },
 
     //* upon destruction, all open requests are cancelled.
