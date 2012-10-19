@@ -63,8 +63,11 @@ we define the parameters separately, this makes it clear what all the relevant p
   (defparameter *watchdog-timeout* 600
     "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
   
-  (defparameter *hydra-secret* nil
+  (defparameter *hydra-body-id* nil
     "if we're currently in a hydra session, this contains the secret in the session.")
+  
+  (defparameter *hydra-head-id* nil
+    "represents the screen identifier of the current request")
 #+end_src
 
 ** user session
@@ -195,9 +198,11 @@ the rid is given by the javascript side.  it's a unique number to represent the 
 when the rid is removed from the list of rids of that user, the thread which is executed for that rid should gracefully exit.  the thread needs to check if its rid still exists periodically.  results should only be pushed onto the stack of results, if the rid is still active.
 
 #+begin_src lisp
-  (defun rid-active-p (rid)
-    "returns non-nil iff <rid> is active for the current user."
-    (find rid (intercom-var 'rids) :test #'string=))
+  (defun rid-active-p (rid &optional (my-active-rids (intercom-var 'rids)))
+    "returns non-nil iff <rid> is active for the current user.  by use of the variable my-active-rids,
+    the currently active rids can be overridden.  !only use when you know what you're doing!"
+    (or (string= rid "")
+        (find rid my-active-rids :test #'string=)))
   
   (defun start-rid (rid)
     "sets <rid> to be active"
@@ -241,24 +246,21 @@ the message box is a place in the session where requests can store messages for 
     "fetches and clears the messages in the mailbox"
     (with-session-lock (!)
       (let (messages my-active-rids)
-        (flet ((rid-active-p (rid)
-                 "we overwrite the original rid-active-p because it doesn't work in this setting."
-                 (find rid my-active-rids :test #'string=)))
-          (!
-           ;; fetch the list of messages
-           (setf messages (intercom-var 'messages))
-           (setf (intercom-var 'messages) nil)
-           ;; correctly change the active rids
-           (setf my-active-rids (intercom-var 'rids))
-           (let ((rids-to-end (intercom-var 'rids-to-end)))
-             (setf (intercom-var 'rids)
-                   (remove-if (lambda (rid)
-                                (find rid rids-to-end :test #'string=))
-                              (intercom-var 'rids))))
-           (setf (intercom-var 'rids-to-end) nil))
-          (delete-if-not (lambda (message)
-                           (rid-active-p (jsown:val message "rid")))
-                         (reverse messages))))))
+        (!
+         ;; fetch the list of messages
+         (setf messages (intercom-var 'messages))
+         (setf (intercom-var 'messages) nil)
+         ;; correctly change the active rids
+         (setf my-active-rids (intercom-var 'rids))
+         (let ((rids-to-end (intercom-var 'rids-to-end)))
+           (setf (intercom-var 'rids)
+                 (remove-if (lambda (rid)
+                              (find rid rids-to-end :test #'string=))
+                            (intercom-var 'rids))))
+         (setf (intercom-var 'rids-to-end) nil))
+        (delete-if-not (lambda (message)
+                         (rid-active-p (jsown:val message "rid") my-active-rids))
+                       (reverse messages)))))
 #+end_src
 
 
@@ -276,7 +278,7 @@ all information about the client is stored in the client's session.  this means 
 #+begin_src lisp
   (hunchentoot:define-easy-handler (talk :uri "/talk") ()
     (in-intercom-session
-      (ensure-session t)
+      (ensure-hydra-head)
       (watchdog)
       (setf (hunchentoot:content-type*) "application/json")
       (let ((open (hunchentoot:parameter "open"))
@@ -314,10 +316,10 @@ this system will only indicate to the threads that they may stop running.  it wi
 :PROPERTIES:
 :noweb-ref: hydra
 :END:
-hydra-sessions allow users to connect to the system with multiple heads.  each head of the session describes the same user session, however their requests from the intercom side of life are seperated.  hydra doesn't use hunchentoot's session mechanism, it contains one that allows some slightly more fine-grained control over who's online.
+hydra-sessions allow users to connect to the system with multiple heads.  we call a session the hydra, the body of what you're doing, and the each visual frontend a head.  each head of the hydra describes the same user session, however their requests from the intercom side of life are seperated.  hydra-sessions don't use hunchentoot's session mechanism, it contains a mechanism that allows some slightly more fine-grained control over the death of hydra-heads and the hydra itself.
 
-** session cookie
-sessions are stored in a cookie.  we base our session cookies on regular http-only cookie-values and we store the session-cookie in the browser.
+** hydra body
+a hydra body is identified by a cookie value.  we base our cookies on regular http-only cookie-values and store the session-cookie in the browser.
 
 #+begin_src lisp
   (defun generate-id ()
@@ -329,22 +331,38 @@ sessions are stored in a cookie.  we base our session cookies on regular http-on
             (expt 2 random-binary-digits))
          (random (expt 2 random-binary-digits)))))
   
-  (defun ensure-session (&optional refreshp)
+  (defun ensure-hydra-body (&optional refreshp)
     "creates a new session and session cookie, unless one was given to us that still exists"
     ;;---! this should check that that the session cookie really is a session and set it up
     (let ((hydra-cookie (hunchentoot:cookie-in "hydra")))
-      (setf *hydra-secret*
-            (or hydra-cookie (generate-id)))
+      (setf *hydra-body-id*
+            (or hydra-cookie (s+ (generate-id))))
       ;;---! and setup the hydra structures in memory 
       (unless hydra-cookie
         nil ;;---! ensure hydra-session is setup in memory
         )
       (when (or refreshp (not hydra-cookie))
         (hunchentoot:set-cookie "hydra"
-                                :value *hydra-secret*
+                                :value *hydra-body-id*
                                 :http-only t
                                 :expires (+ (get-universal-time)
                                             (* 60 60 24 30))))))
+#+end_src
+
+** hydra head
+the hydra head represents a single visualisation of the hydra body.  each head is identified by a number.  the number, in combination with the body can be used to send messages back to the head.
+
+#+begin_src lisp
+  (defun ensure-hydra-head ()
+    "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
+    refreshes *hydra-body-id* when no hhid was found in the current request."
+    (let* ((hhid (hunchentoot:get-parameter "hhid"))
+           (*hydra-head-id* (s+ (or hhid (generate-id)))))
+      (ensure-hydra-body hhid)
+      ;;---! setup the datastructures for both the head and the body!
+      (unless hhid
+        (let ((*rid* ""))
+          (message "hhid" *hydra-head-id*)))))
 #+end_src
 
 
@@ -376,13 +394,29 @@ when a close request is handled, we must remove the rid.  the thread which is ex
 #+end_src
 
 
+* support code
+:PROPERTIES:
+:noweb-ref: support
+:END:
+some handy snippets of code which make some code easier to write.
+
+#+begin_src lisp
+  (defun s+ (&rest args)
+    "pretty-prints and concatenates the resulting strings of each arg in <args>."
+    (format nil "~{~A~}" args))
+#+end_src
+
 * bolting together the tangled file
 in this section all the code fragments are joined together for the lisp source file(s).
 
 #+begin_src lisp :tangle intercom.lisp
   (in-package :intercom)
   
+  <<support>>
+  
   <<data-structures>>
+  
+  <<hydra>>
   
   <<client-talk>>
   
