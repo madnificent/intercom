@@ -1,6 +1,6 @@
 
 (defpackage :intercom
-  (:use :cl :jsown)
+  (:use :cl :jsown :alexandria)
   (:export :define-remote-procedure
            :message :activep
            :*remote-procedure-context*

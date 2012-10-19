@@ -7,7 +7,7 @@
   :maintainer "Aad Versteden <aad@knowified.com>"
   :licence "MIT"
   :description "Intercom allows bidirectional message passing between javascript and lisp."
-  :depends-on (jsown hunchentoot bordeaux-threads split-sequence)
+  :depends-on (jsown hunchentoot bordeaux-threads split-sequence alexandria)
   :serial t
   :components ((:file "packages")
                (:file "intercom")))

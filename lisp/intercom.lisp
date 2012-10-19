@@ -12,6 +12,9 @@
 
 (defparameter *watchdog-timeout* 600
   "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
+
+(defparameter *hydra-secret* nil
+  "if we're currently in a hydra session, this contains the secret in the session.")
 (defmacro with-session-lock ((protection-symbol) &body body)
   "executes <body> in a piece of code in which the session is locked"
   `(progn
@@ -178,6 +181,7 @@
 
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
+    (ensure-session t)
     (watchdog)
     (setf (hunchentoot:content-type*) "application/json")
     (let ((open (hunchentoot:parameter "open"))

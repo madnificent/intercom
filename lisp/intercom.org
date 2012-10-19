@@ -22,7 +22,7 @@ intercom assumes the existence of hunchentoot and of jsown for communication wit
     :maintainer "Aad Versteden <aad@knowified.com>"
     :licence "MIT"
     :description "Intercom allows bidirectional message passing between javascript and lisp."
-    :depends-on (jsown hunchentoot bordeaux-threads split-sequence)
+    :depends-on (jsown hunchentoot bordeaux-threads split-sequence alexandria)
     :serial t
     :components ((:file "packages")
                  (:file "intercom")))
@@ -33,7 +33,7 @@ intercom is simple and consists of one package which exports everything.  we did
 
 #+begin_src lisp :tangle packages.lisp
   (defpackage :intercom
-    (:use :cl :jsown)
+    (:use :cl :jsown :alexandria)
     (:export :define-remote-procedure
              :message :activep
              :*remote-procedure-context*
@@ -62,6 +62,9 @@ we define the parameters separately, this makes it clear what all the relevant p
   
   (defparameter *watchdog-timeout* 600
     "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
+  
+  (defparameter *hydra-secret* nil
+    "if we're currently in a hydra session, this contains the secret in the session.")
 #+end_src
 
 ** user session
@@ -273,6 +276,7 @@ all information about the client is stored in the client's session.  this means 
 #+begin_src lisp
   (hunchentoot:define-easy-handler (talk :uri "/talk") ()
     (in-intercom-session
+      (ensure-session t)
       (watchdog)
       (setf (hunchentoot:content-type*) "application/json")
       (let ((open (hunchentoot:parameter "open"))
@@ -304,6 +308,43 @@ this system will only indicate to the threads that they may stop running.  it wi
     "returns non-nil iff the last message we received from the client isn't too long ago"
     (>= (+ (intercom-var 'watchdog) *watchdog-timeout*)
         (get-universal-time)))
+#+end_src
+
+* hydra-sessions
+:PROPERTIES:
+:noweb-ref: hydra
+:END:
+hydra-sessions allow users to connect to the system with multiple heads.  each head of the session describes the same user session, however their requests from the intercom side of life are seperated.  hydra doesn't use hunchentoot's session mechanism, it contains one that allows some slightly more fine-grained control over who's online.
+
+** session cookie
+sessions are stored in a cookie.  we base our session cookies on regular http-only cookie-values and we store the session-cookie in the browser.
+
+#+begin_src lisp
+  (defun generate-id ()
+    "we generate an id by taking the universal time and augmenting it by some random number"
+    (let ((random-binary-digits 35)
+          (universal-time-binary-digits 25))
+      ;; let's only care about the last 20 digits of universal time, this gives us roughly one year to cycle
+      (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
+            (expt 2 random-binary-digits))
+         (random (expt 2 random-binary-digits)))))
+  
+  (defun ensure-session (&optional refreshp)
+    "creates a new session and session cookie, unless one was given to us that still exists"
+    ;;---! this should check that that the session cookie really is a session and set it up
+    (let ((hydra-cookie (hunchentoot:cookie-in "hydra")))
+      (setf *hydra-secret*
+            (or hydra-cookie (generate-id)))
+      ;;---! and setup the hydra structures in memory 
+      (unless hydra-cookie
+        nil ;;---! ensure hydra-session is setup in memory
+        )
+      (when (or refreshp (not hydra-cookie))
+        (hunchentoot:set-cookie "hydra"
+                                :value *hydra-secret*
+                                :http-only t
+                                :expires (+ (get-universal-time)
+                                            (* 60 60 24 30))))))
 #+end_src
 
 
