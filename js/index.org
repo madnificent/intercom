@@ -332,6 +332,7 @@ All communication with the server happens through a function that is called talk
 * Handling server responses
 The server responds to a poll by sending a javascript object that holds for every requestId with new information a message object. This object is passed on to the handler of the request.
 
+With the new implementation of intercom, a session concept was added. The server assigns us a session id through the public channel of intercom (rid=""). This hydra-head-id (or hhid) will be remembered in the intercom object and will be sent as a parameter at every request.
 #+name:handling-responses
 #+BEGIN_SRC js
   //* handles all new information that the server sends our way.
@@ -342,20 +343,30 @@ The server responds to a poll by sending a javascript object that holds for ever
       for(var i=0;i<responses.length;i++){
           var response=responses[i];
           var requestId=response.rid;
-          var request=this.currentRequests[requestId];
-          if(request){
-              if(request.keys && request.keys.indexOf(response.type)>=0){
-                  if(request.onFinish){
-                      request.onFinish(response);
+          if(requestId!=""){
+              var request=this.currentRequests[requestId];
+              if(request){
+                  if(request.keys && request.keys.indexOf(response.type)>=0){
+                      if(request.onFinish){
+                          request.onFinish(response);
+                      }
+                      this.complete(requestId);
+                  }else if(request.onResponse){
+                      request.onResponse(response);
                   }
-                  this.complete(requestId);
-              }else if(request.onResponse){
-                  request.onResponse(response);
-              }
               
-          }else if(console && console.log){
-              console.log("received information on event that we were not tracking!");
+              }else if(console && console.log){
+                  console.log("received information on event that we were not tracking!");
+              }
+          }else{
+              this.handlePublicMessage(response);
           }
+      }
+  },
+  //* handles all public messages that we receive (with rid == "")
+  handlePublicMessage:function(response){
+      if(response.type=="hhid"){
+          this.hydraheadId=response.body.hhid;
       }
   }
 #+END_SRC
@@ -366,6 +377,7 @@ The actual interaction with the server happens through http requests. This lower
 NOTE: IE stubbornly caches http requests, even if you tell it not to. As a result, each request also sends a time parameter to the server.
 #+name:low-level-interaction
 #+BEGIN_SRC js
+  hydraheadId:null,
   //* sends a http request to the server
   sendRequest:function(requestObject){
       var httpRequest;
@@ -386,7 +398,10 @@ NOTE: IE stubbornly caches http requests, even if you tell it not to. As a resul
       var randomSize=100000;
       var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
       
-      httpRequest.open('GET', this.url+"?time="+disableCache+(open.length>0?"&open="+open:"")+(close.length>0?"&close="+close:""));
+      httpRequest.open('GET', this.url+"?time="+disableCache+
+                       (this.hydraheadId!=null?"&hhid="+this.hydraheadId:"")+
+                       (open.length>0?"&open="+open:"")+
+                       (close.length>0?"&close="+close:""));
       httpRequest.setRequestHeader('Content-Type','application/json');
       try{
           httpRequest.send(null);    

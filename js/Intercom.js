@@ -216,22 +216,33 @@ var intercomRecipe={
         for(var i=0;i<responses.length;i++){
             var response=responses[i];
             var requestId=response.rid;
-            var request=this.currentRequests[requestId];
-            if(request){
-                if(request.keys && request.keys.indexOf(response.type)>=0){
-                    if(request.onFinish){
-                        request.onFinish(response);
+            if(requestId!=""){
+                var request=this.currentRequests[requestId];
+                if(request){
+                    if(request.keys && request.keys.indexOf(response.type)>=0){
+                        if(request.onFinish){
+                            request.onFinish(response);
+                        }
+                        this.complete(requestId);
+                    }else if(request.onResponse){
+                        request.onResponse(response);
                     }
-                    this.complete(requestId);
-                }else if(request.onResponse){
-                    request.onResponse(response);
-                }
                 
-            }else if(console && console.log){
-                console.log("received information on event that we were not tracking!");
+                }else if(console && console.log){
+                    console.log("received information on event that we were not tracking!");
+                }
+            }else{
+                this.handlePublicMessage(response);
             }
         }
     },
+    //* handles all public messages that we receive (with rid == "")
+    handlePublicMessage:function(response){
+        if(response.type=="hhid"){
+            this.hydraheadId=response.body.hhid;
+        }
+    },
+    hydraheadId:null,
     //* sends a http request to the server
     sendRequest:function(requestObject){
         var httpRequest;
@@ -252,7 +263,10 @@ var intercomRecipe={
         var randomSize=100000;
         var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
         
-        httpRequest.open('GET', this.url+"?time="+disableCache+(open.length>0?"&open="+open:"")+(close.length>0?"&close="+close:""));
+        httpRequest.open('GET', this.url+"?time="+disableCache+
+                         (this.hydraheadId!=null?"&hhid="+this.hydraheadId:"")+
+                         (open.length>0?"&open="+open:"")+
+                         (close.length>0?"&close="+close:""));
         httpRequest.setRequestHeader('Content-Type','application/json');
         try{
             httpRequest.send(null);    
