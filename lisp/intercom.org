@@ -278,8 +278,8 @@ all information about the client is stored in the client's session.  this means 
 #+begin_src lisp
   (hunchentoot:define-easy-handler (talk :uri "/talk") ()
     (in-intercom-session
-      (ensure-hydra-head)
       (watchdog)
+      (ensure-hydra-head)
       (setf (hunchentoot:content-type*) "application/json")
       (let ((open (hunchentoot:parameter "open"))
             (close (hunchentoot:parameter "close")))

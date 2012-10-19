@@ -154,7 +154,6 @@
   "returns non-nil if we are currently in an active remote procedure.
   alias for in-active-remote-procedure-p."
   (in-active-remote-procedure-p))
-
 (defun message (type body)
   "sends a message to the client"
   (with-session-lock (!)
@@ -224,8 +223,8 @@
 
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
-    (ensure-hydra-head)
     (watchdog)
+    (ensure-hydra-head)
     (setf (hunchentoot:content-type*) "application/json")
     (let ((open (hunchentoot:parameter "open"))
           (close (hunchentoot:parameter "close")))
