@@ -381,6 +381,90 @@ in order to store sessions, we store the auth-keys and the authentications which
                *hydra-auth-store*)))
 #+end_src
 
+** setting hydra up for a request
+whenever a request enters, we need to ensure the hydra is setup.  it must either be found, or built.  this section handles that portion of the hydra.
+
+#+begin_src lisp
+  (defun ensure-hydra ()
+    "ensures the hydra is set up.  this means that:
+    - after this function execution:
+      - *hydra-head* is bound to the hydra's head
+      - *hydra-body* is bound to the hydra's body
+      - *hydra-auth-store* contains an authentication for continued storage
+    - after this request:
+      - the user has a \"hydra\" cookie which links to this session."
+    (unless (discover-hydra)
+      (let ((hydra-body (build-active-hydra-body)))
+        (ensure-hydra-head hydra-body)
+        (build-active-authentication hydra-body))))
+  
+  (defun build-active-hydra-body ()
+    "builds a new hydra-body and sets it as the current hydra-body."
+    (setf *hydra-body* (make-hydra-body)))
+  
+  (defun build-active-authentication (hydra-body)
+    "builds a new authentication, which identifies hydra-body, and stores it
+    in the necessary structures."
+    (let ((id (s+ (generate-id))))
+      (store-hydra-validation (make-session-validation hydra-body id))
+      ;;---! this cookie is never updated.  it should be updated every so often so we can
+      ;;     keep the session alive
+      (hunchentoot:set-cookie "hydra"
+                              :value id
+                              :http-only t
+                              :expires (+ (get-universal-time)
+                                          (* 60 60 24 30)))))
+  
+  (defun discover-hydra ()
+    "discover-hydra returns non-nil iff we had a session-cookie through which we could
+    find a hydra session-validation which is valid for our current session.
+    this function sets up all special variables for the hydra to be happy.  it also
+    touches the hydra-body and the relevant hydra-head so we're active."
+    (when (discover-hydra-body)
+      (ensure-hydra-head *hydra-body*)))
+  
+  (defun discover-hydra-body ()
+    "returns non-nil iff we had a session-cookie through which we could
+    find a hydra session-validation which is valid for our current session.
+    this function sets up all special variables for the hydra-body,
+    but leaves the hydra-head for another solution to figure out."
+    (esc (^)
+      (setf *hydra-body*
+            (session-validation-hydra-body
+             (^ (find-if #'valid-session-p
+                         (retrieve-hydra-validations (^ (hunchentoot:cookie-in "hydra")))))))
+      (touch *hydra-body*)
+      *hydra-body*))
+  
+  (defun ensure-hydra-head (hydra-body)
+    "ensures the hydra-head exists and is set in the variable *hydra-head*.
+    assumes *hydra-body* is set.  returns the current hydra-head."
+    (let* ((hhid (ensure-hhid))
+           (hydra-head (find hhid (hydra-body-heads hydra-body)
+                             :test #'string= :key #'hydra-head-id)))
+      (if *hydra-head*
+          (progn
+           (touch hydra-head)
+           (setf *hydra-head* hydra-head))
+          (let ((new-head (make-hydra-head :id hhid)))
+            (setf *hydra-head* new-head)
+            (push new-head (hydra-body-heads hydra-body)))))
+    *hydra-head*)
+  
+  (defun ensure-hhid ()
+    "returns the hhid if one was given as a get-variable, or creates a new hhid
+    and places a message on the stack so the javascript client knows what the hhid is.
+    returns the hhid."
+    (or *hydra-head-id*
+        (setf *hydra-head-id* (hunchentoot:get-parameter "hhid"))
+        (setf *hydra-head-id*
+              (let ((*rid* "")
+                    (hhid (generate-id)))
+                (message "hhid" hhid)
+                hhid))))
+#+end_src
+
+
 ** hydra body
 a hydra body is identified by a cookie value.  we base our cookies on regular http-only cookie-values and store the session-cookie in the browser.
 
@@ -523,9 +607,10 @@ in order to validate that a session is still 'live', we check the following para
          (string= (hunchentoot:host) (session-validation-host session-validation))
          (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
   
-  (defun make-session-validation (&optional (hydra-id *hydra-body-id*))
+  (defun make-session-validation (hydra-body &optional (hydra-id *hydra-body-id*))
     "constructs a new session-validation object for the current session."
     (mk-session-validation :hydra-id hydra-id
+                           :hydra-body hydra-body
                            :host (hunchentoot:host)
                            :user-agent (hunchentoot:user-agent)))
 #+end_src
@@ -574,6 +659,25 @@ some handy snippets of code which make some code easier to write.
   (defun s+ (&rest args)
     "pretty-prints and concatenates the resulting strings of each arg in <args>."
     (format nil "~{~A~}" args))
+  
+  (defmacro with-doublequotes ((&rest variables) &body body)
+    "makes sure each variable in variables is bound to itself, essentially allowing you to write ,, in a double backtick to get that symbol.  handy for gensym."
+    `(let ,(loop for var in variables
+              collect `(,var ',var))
+       ,@body))
+  
+  (defmacro esc ((macro-symbol &key (test ''null) (return nil)) &body body)
+    (with-gensyms (form-var block-var val test-var return-var)
+      `(block ,block-var
+         (let ((,test-var ,test)
+               (,return-var ,return))
+           (macrolet ((,macro-symbol (,form-var)
+                        (with-doublequotes (,block-var ,val ,test-var ,return-var)
+                          `(let ((,,val ,,form-var))
+                             (if (funcall ,,test-var ,,val)
+                                 (return-from ,,block-var ,,return-var)
+                                 ,,val)))))
+             ,@body)))))
 #+end_src
 
 ** assertions
