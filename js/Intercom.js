@@ -239,7 +239,7 @@ var intercomRecipe={
     //* handles all public messages that we receive (with rid == "")
     handlePublicMessage:function(response){
         if(response.type=="hhid"){
-            this.hydraheadId=response.body.hhid;
+            this.hydraheadId=response.body;
         }
     },
     hydraheadId:null,

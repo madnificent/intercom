@@ -366,7 +366,7 @@ With the new implementation of intercom, a session concept was added. The server
   //* handles all public messages that we receive (with rid == "")
   handlePublicMessage:function(response){
       if(response.type=="hhid"){
-          this.hydraheadId=response.body.hhid;
+          this.hydraheadId=response.body;
       }
   }
 #+END_SRC
