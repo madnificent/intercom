@@ -372,83 +372,7 @@ a hydra body is identified by a cookie value.  we base our cookies on regular ht
                                             (* 60 60 24 30))))))
 #+end_src
 
-** hydra head
-the hydra head represents a single visualisation of the hydra body.  each head is identified by a number.  the number, in combination with the body can be used to send messages back to the head.
-
-#+begin_src lisp
-  (defun ensure-hydra-head ()
-    "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
-    refreshes *hydra-body-id* when no hhid was found in the current request."
-    (let* ((hhid (hunchentoot:get-parameter "hhid"))
-           (*hydra-head-id* (s+ (or hhid (generate-id)))))
-      (ensure-hydra-body hhid)
-      ;;---! setup the datastructures for both the head and the body!
-      (unless hhid
-        (let ((*rid* ""))
-          (message "hhid" *hydra-head-id*)))))
-#+end_src
-
-** session validation
-in order to validate that a session is still 'live', we check the following parameters:
-- hydra cookie value
-- host
-- user-agent
-
-#+begin_src lisp
-  (defstruct (session-validation (:constructor mk-session-validation))
-    (hydra-id "" :type string)
-    (host "" :type string)
-    (user-agent "" :type string))
-  
-  (defun valid-session-p (session-validation)
-    "validates the session-validation for the current request"
-    (and (string= *hydra-body-id* (session-validation-hydra-id session-validation))
-         (string= (hunchentoot:host) (session-validation-host session-validation))
-         (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
-  
-  (defun make-session-validation (&optional (hydra-id *hydra-body-id*))
-    "constructs a new session-validation object for the current session."
-    (mk-session-validation :hydra-id hydra-id
-                           :host (hunchentoot:host)
-                           :user-agent (hunchentoot:user-agent)))
-#+end_src
-
-FUTURE WORK: additionally a quality measure can be used for added certainty.  this quality measure should weigh the following values and should compare them to the last request in order to see if the given request is presumed to be valid:
-- real-remote-addr
-- server-protocol
-- remote-port
-- remote-addr
-
-** key-value storage
-both a hydra-body as a hydra-head need to have some form of key-value store.  the key-value store is represented with this struct.
-
-#+begin_src lisp
-  (defstruct key-value-store
-    (lock (bordeaux-threads:make-recursive-lock "key-value-lock"))
-    (hash (make-hash-table)))
-  
-  (defmacro with-key-value-store-lock (store &body body)
-    "executes body in an environment in which <store> is locked."
-    `(bordeaux-threads:with-recursive-lock-held ((key-value-store-lock ,store))
-       ,@body))
-  
-  (defun kv-store-read (key store)
-    "reads the key from store"
-    (declare (type key-value-store store))
-    (assert-eql-compatible key)
-    (with-key-value-store-lock store
-      (gethash key (key-value-store-hash store))))
-  
-  (defun (setf kv-store-read) (value key store)
-    "sets <key> in <store> to <value>"
-    (declare (type key-value-store store))
-    (assert-eql-compatible key)
-    (with-key-value-store-lock store
-      (setf (gethash key (key-value-store-hash store))
-            value)))
-#+end_src
-
-** hydra body (session) representation
+*** hydra body (session) representation
 the hydra body is represented as a struct which may contain some information.  hydra-body in itself knows about the heads that are attached to it (NOTE: for fast finding of head).  it doesn't link to the validators which may validate the hydra-body.
 
 #+begin_src lisp
@@ -488,7 +412,25 @@ the hydra body is represented as a struct which may contain some information.  h
        (get-universal-time)))
 #+end_src
 
-** hydra head (screen) representation
+
+
+** hydra head
+the hydra head represents a single visualisation of the hydra body.  each head is identified by a number.  the number, in combination with the body can be used to send messages back to the head.
+
+#+begin_src lisp
+  (defun ensure-hydra-head ()
+    "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
+    refreshes *hydra-body-id* when no hhid was found in the current request."
+    (let* ((hhid (hunchentoot:get-parameter "hhid"))
+           (*hydra-head-id* (s+ (or hhid (generate-id)))))
+      (ensure-hydra-body hhid)
+      ;;---! setup the datastructures for both the head and the body!
+      (unless hhid
+        (let ((*rid* ""))
+          (message "hhid" *hydra-head-id*)))))
+#+end_src
+
+*** hydra head (screen) representation
 the hydra-head is very similar to the hydra-body.  the main difference is that the head knows about its body.
 
 #+begin_src lisp
@@ -521,6 +463,39 @@ the hydra-head is very similar to the hydra-body.  the main difference is that t
     (< (+ (hydra-head-atime hydra) *hydra-head-timeout*)
        (get-universal-time)))
 #+end_src
+
+
+
+** session validation
+in order to validate that a session is still 'live', we check the following parameters:
+- hydra cookie value
+- host
+- user-agent
+
+#+begin_src lisp
+  (defstruct (session-validation (:constructor mk-session-validation))
+    (hydra-id "" :type string)
+    (host "" :type string)
+    (user-agent "" :type string))
+  
+  (defun valid-session-p (session-validation)
+    "validates the session-validation for the current request"
+    (and (string= *hydra-body-id* (session-validation-hydra-id session-validation))
+         (string= (hunchentoot:host) (session-validation-host session-validation))
+         (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
+  
+  (defun make-session-validation (&optional (hydra-id *hydra-body-id*))
+    "constructs a new session-validation object for the current session."
+    (mk-session-validation :hydra-id hydra-id
+                           :host (hunchentoot:host)
+                           :user-agent (hunchentoot:user-agent)))
+#+end_src
+
+FUTURE WORK: additionally a quality measure can be used for added certainty.  this quality measure should weigh the following values and should compare them to the last request in order to see if the given request is presumed to be valid:
+- real-remote-addr
+- server-protocol
+- remote-port
+- remote-addr
 
 * handling requests
 :PROPERTIES:
@@ -590,6 +565,37 @@ various assertions are used, they're tedious to write manually each time.
              (,place)
              "~A must contain an object of type hydra-body.  it contains ~A." ',place ,place))
 #+end_src
+
+** key-value storage
+both a hydra-body as a hydra-head need to have some form of key-value store.  the key-value store is represented with this struct.
+
+#+begin_src lisp
+  (defstruct key-value-store
+    (lock (bordeaux-threads:make-recursive-lock "key-value-lock"))
+    (hash (make-hash-table)))
+  
+  (defmacro with-key-value-store-lock (store &body body)
+    "executes body in an environment in which <store> is locked."
+    `(bordeaux-threads:with-recursive-lock-held ((key-value-store-lock ,store))
+       ,@body))
+  
+  (defun kv-store-read (key store)
+    "reads the key from store"
+    (declare (type key-value-store store))
+    (assert-eql-compatible key)
+    (with-key-value-store-lock store
+      (gethash key (key-value-store-hash store))))
+  
+  (defun (setf kv-store-read) (value key store)
+    "sets <key> in <store> to <value>"
+    (declare (type key-value-store store))
+    (assert-eql-compatible key)
+    (with-key-value-store-lock store
+      (setf (gethash key (key-value-store-hash store))
+            value)))
+#+end_src
+
+
 
 * bolting together the tangled file
 in this section all the code fragments are joined together for the lisp source file(s).

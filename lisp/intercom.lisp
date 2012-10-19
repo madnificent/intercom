@@ -30,6 +30,29 @@
   `(assert (hydra-body-p ,place)
            (,place)
            "~A must contain an object of type hydra-body.  it contains ~A." ',place ,place))
+(defstruct key-value-store
+  (lock (bordeaux-threads:make-recursive-lock "key-value-lock"))
+  (hash (make-hash-table)))
+
+(defmacro with-key-value-store-lock (store &body body)
+  "executes body in an environment in which <store> is locked."
+  `(bordeaux-threads:with-recursive-lock-held ((key-value-store-lock ,store))
+     ,@body))
+
+(defun kv-store-read (key store)
+  "reads the key from store"
+  (declare (type key-value-store store))
+  (assert-eql-compatible key)
+  (with-key-value-store-lock store
+    (gethash key (key-value-store-hash store))))
+
+(defun (setf kv-store-read) (value key store)
+  "sets <key> in <store> to <value>"
+  (declare (type key-value-store store))
+  (assert-eql-compatible key)
+  (with-key-value-store-lock store
+    (setf (gethash key (key-value-store-hash store))
+          value)))
 
 (defparameter *remote-procedures* (make-hash-table :test 'equal :synchronized t)
   "contains all intercom remote procedures, the keywords being the matched string and the values being the corresponding function.")
@@ -248,55 +271,6 @@
                               :http-only t
                               :expires (+ (get-universal-time)
                                           (* 60 60 24 30))))))
-(defun ensure-hydra-head ()
-  "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
-  refreshes *hydra-body-id* when no hhid was found in the current request."
-  (let* ((hhid (hunchentoot:get-parameter "hhid"))
-         (*hydra-head-id* (s+ (or hhid (generate-id)))))
-    (ensure-hydra-body hhid)
-    ;;---! setup the datastructures for both the head and the body!
-    (unless hhid
-      (let ((*rid* ""))
-        (message "hhid" *hydra-head-id*)))))
-(defstruct (session-validation (:constructor mk-session-validation))
-  (hydra-id "" :type string)
-  (host "" :type string)
-  (user-agent "" :type string))
-
-(defun valid-session-p (session-validation)
-  "validates the session-validation for the current request"
-  (and (string= *hydra-body-id* (session-validation-hydra-id session-validation))
-       (string= (hunchentoot:host) (session-validation-host session-validation))
-       (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
-
-(defun make-session-validation (&optional (hydra-id *hydra-body-id*))
-  "constructs a new session-validation object for the current session."
-  (mk-session-validation :hydra-id hydra-id
-                         :host (hunchentoot:host)
-                         :user-agent (hunchentoot:user-agent)))
-(defstruct key-value-store
-  (lock (bordeaux-threads:make-recursive-lock "key-value-lock"))
-  (hash (make-hash-table)))
-
-(defmacro with-key-value-store-lock (store &body body)
-  "executes body in an environment in which <store> is locked."
-  `(bordeaux-threads:with-recursive-lock-held ((key-value-store-lock ,store))
-     ,@body))
-
-(defun kv-store-read (key store)
-  "reads the key from store"
-  (declare (type key-value-store store))
-  (assert-eql-compatible key)
-  (with-key-value-store-lock store
-    (gethash key (key-value-store-hash store))))
-
-(defun (setf kv-store-read) (value key store)
-  "sets <key> in <store> to <value>"
-  (declare (type key-value-store store))
-  (assert-eql-compatible key)
-  (with-key-value-store-lock store
-    (setf (gethash key (key-value-store-hash store))
-          value)))
 (defstruct hydra-body
   (data (make-key-value-store))
   (atime (get-universal-time))
@@ -331,6 +305,16 @@
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
   (< (+ (hydra-body-atime hydra) *hydra-body-timeout*)
      (get-universal-time)))
+(defun ensure-hydra-head ()
+  "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
+  refreshes *hydra-body-id* when no hhid was found in the current request."
+  (let* ((hhid (hunchentoot:get-parameter "hhid"))
+         (*hydra-head-id* (s+ (or hhid (generate-id)))))
+    (ensure-hydra-body hhid)
+    ;;---! setup the datastructures for both the head and the body!
+    (unless hhid
+      (let ((*rid* ""))
+        (message "hhid" *hydra-head-id*)))))
 (defstruct hydra-head
   (id nil)
   (data (make-key-value-store))
@@ -359,6 +343,22 @@
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
   (< (+ (hydra-head-atime hydra) *hydra-head-timeout*)
      (get-universal-time)))
+(defstruct (session-validation (:constructor mk-session-validation))
+  (hydra-id "" :type string)
+  (host "" :type string)
+  (user-agent "" :type string))
+
+(defun valid-session-p (session-validation)
+  "validates the session-validation for the current request"
+  (and (string= *hydra-body-id* (session-validation-hydra-id session-validation))
+       (string= (hunchentoot:host) (session-validation-host session-validation))
+       (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
+
+(defun make-session-validation (&optional (hydra-id *hydra-body-id*))
+  "constructs a new session-validation object for the current session."
+  (mk-session-validation :hydra-id hydra-id
+                         :host (hunchentoot:host)
+                         :user-agent (hunchentoot:user-agent)))
 
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
