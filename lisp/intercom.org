@@ -341,6 +341,46 @@ this system will only indicate to the threads that they may stop running.  it wi
 :END:
 hydra-sessions allow users to connect to the system with multiple heads.  we call a session the hydra, the body of what you're doing, and the each visual frontend a head.  each head of the hydra describes the same user session, however their requests from the intercom side of life are seperated.  hydra-sessions don't use hunchentoot's session mechanism, it contains a mechanism that allows some slightly more fine-grained control over the death of hydra-heads and the hydra itself.
 
+** storing sessions
+in order to store sessions, we store the auth-keys and the authentications which belong to each key.  each authentication has a link to the hydra-body.  the hydra-body has a link to each of the hydra-heads which belong to it.  the correct one is found by using the hhid, which is sent with each intercom request.
+
+#+begin_src lisp
+  (defparameter *hydra-auth-store* (make-hash-table :test 'equal)
+    "a hash-table linking each \"hydra\" cookie value to the authentication which belongs to it.")
+  
+  (defparameter *hydra-auth-lock* (bordeaux-threads:make-lock "hydra-auth-lock")
+    "this lock is used when accessing the hydra-auth-store")
+  
+  (defmacro with-hydra-auth-store-lock (&body body)
+    "executes <body> in an environment in which *hydra-auth-store* is locked."
+    `(bordeaux-threads:with-lock-held (*hydra-auth-lock*)
+       ,@body))
+  
+  (defun store-hydra-validation (session-validation)
+    "stores the hydra session-validation so it can be found back."
+    (assert-hydra-session-validation session-validation)
+    (assert-hydra-body (session-validation-hydra-body session-validation))
+    (with-hydra-auth-store-lock
+      (push session-validation
+            (gethash (session-validation-hydra-id session-validation)
+                     *hydra-auth-store*))))
+  
+  (defun retrieve-hydra-validations (hydra-id)
+    "returns all hydra session-varlidation instance which belong to the given hydra-id"
+    (assert-nonempty-string hydra-id)
+    (with-hydra-auth-store-lock
+      (gethash (session-validation-hydra-id hydra-id)
+               *hydra-auth-store*)))
+  
+  (defun remove-hydra-validation (session-validation)
+    "removes the session-validation <session-validation> from the known validations."
+    (assert-hydra-session-validation session-validation)
+    (with-hydra-auth-store-lock
+      ;;---! do something smart with a counter in the hydra-body here so we know the hydra-body should be terminated too
+      (remhash (session-validation-hydra-id session-validation)
+               *hydra-auth-store*)))
+#+end_src
+
 ** hydra body
 a hydra body is identified by a cookie value.  we base our cookies on regular http-only cookie-values and store the session-cookie in the browser.
 
@@ -464,8 +504,6 @@ the hydra-head is very similar to the hydra-body.  the main difference is that t
        (get-universal-time)))
 #+end_src
 
-
-
 ** session validation
 in order to validate that a session is still 'live', we check the following parameters:
 - hydra cookie value
@@ -476,7 +514,8 @@ in order to validate that a session is still 'live', we check the following para
   (defstruct (session-validation (:constructor mk-session-validation))
     (hydra-id "" :type string)
     (host "" :type string)
-    (user-agent "" :type string))
+    (user-agent "" :type string)
+    (hydra-body nil :type (or hydra-body null)))
   
   (defun valid-session-p (session-validation)
     "validates the session-validation for the current request"
@@ -541,6 +580,13 @@ some handy snippets of code which make some code easier to write.
 various assertions are used, they're tedious to write manually each time.
 
 #+begin_src lisp
+  (defmacro assert-nonempty-string (place)
+    "asserts that <place> contains a non-empty string."
+    `(assert (and (stringp ,place)
+                  (> (length ,place) 0))
+             (,place)
+             "~A must contain a nonempty string.  it contains ~A" ',place ,place))
+  
   (defmacro assert-eql-compatible (place)
     "asserts that place is an eql-compatible place.
     this means it must be one of:
@@ -564,6 +610,12 @@ various assertions are used, they're tedious to write manually each time.
     `(assert (hydra-body-p ,place)
              (,place)
              "~A must contain an object of type hydra-body.  it contains ~A." ',place ,place))
+  
+  (defmacro assert-hydra-session-validation (place)
+    "asserts that <place> contains a hydra-session"
+    `(assert (session-validation-p ,place)
+             (,place)
+             "~A must contain an object of type session-validation.  it contains ~A." ',place ,place))
 #+end_src
 
 ** key-value storage
