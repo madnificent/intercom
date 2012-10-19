@@ -40,6 +40,17 @@ intercom is simple and consists of one package which exports everything.  we did
              :*watchdog-timeout*))
 #+end_src
 
+* generic functions
+:PROPERTIES:
+:noweb-ref: generic-functions
+:END:
+generic functions are best defined at the top of the lisp file.  we define the generic functions here, but implement them in the relevant sections.
+
+#+begin_src lisp
+  (defgeneric touch (object)
+    (:documentation "touches an object, updating the modification time."))
+#+end_src
+
 * data structures
 :PROPERTIES:
 :noweb-ref: data-structures
@@ -66,8 +77,20 @@ we define the parameters separately, this makes it clear what all the relevant p
   (defparameter *hydra-body-id* nil
     "if we're currently in a hydra session, this contains the secret in the session.")
   
+  (defparameter *hydra-body* nil
+    "contains the hydra-body once we have a hydra-body in the current request")
+  
+  (defparameter *hydra-body-timeout* 86400
+    "the time we have before we assume the session has ended.")
+  
   (defparameter *hydra-head-id* nil
     "represents the screen identifier of the current request")
+  
+  (defparameter *hydra-head* nil
+    "contains the hydra-head once we have one in the current request")
+  
+  (defparameter *hydra-head-timeout* 600
+    "the time we have before we assume the head is detached.")
 #+end_src
 
 ** user session
@@ -396,6 +419,108 @@ FUTURE WORK: additionally a quality measure can be used for added certainty.  th
 - remote-port
 - remote-addr
 
+** key-value storage
+both a hydra-body as a hydra-head need to have some form of key-value store.  the key-value store is represented with this struct.
+
+#+begin_src lisp
+  (defstruct key-value-store
+    (lock (bordeaux-threads:make-recursive-lock "key-value-lock"))
+    (hash (make-hash-table)))
+  
+  (defmacro with-key-value-store-lock (store &body body)
+    "executes body in an environment in which <store> is locked."
+    `(bordeaux-threads:with-recursive-lock-held ((key-value-store-lock ,store))
+       ,@body))
+  
+  (defun kv-store-read (key store)
+    "reads the key from store"
+    (declare (type key-value-store store))
+    (assert-eql-compatible key)
+    (with-key-value-store-lock store
+      (gethash key (key-value-store-hash store))))
+  
+  (defun (setf kv-store-read) (value key store)
+    "sets <key> in <store> to <value>"
+    (declare (type key-value-store store))
+    (assert-eql-compatible key)
+    (with-key-value-store-lock store
+      (setf (gethash key (key-value-store-hash store))
+            value)))
+#+end_src
+
+** hydra body (session) representation
+the hydra body is represented as a struct which may contain some information.  hydra-body in itself knows about the heads that are attached to it (NOTE: for fast finding of head).  it doesn't link to the validators which may validate the hydra-body.
+
+#+begin_src lisp
+  (defstruct hydra-body
+    (data (make-key-value-store))
+    (atime (get-universal-time))
+    (heads nil))
+  
+  (defmethod touch ((hydra hydra-body))
+    (setf (hydra-body-atime hydra)
+          (get-universal-time)))
+  
+  (defun session-key (key &optional (session *hydra-body*))
+    "returns the value of <key> which belongs to <session>, or nil if it didn't exist.
+    the second value is non-nil iff <key> was found in <session>."
+    (kv-store-read key (hydra-body-data session)))
+  
+  (defun (setf session-key) (value key &optional (session *hydra-body*))
+    "sets the value of ,key> which belongs to <session> to <value>."
+    (setf (kv-store-read key (hydra-body-data session)) value))
+  
+  (defmacro with-session-db-lock ((&optional (session *hydra-body*)) &body body)
+    "executes <body> with a lock on the datastore of hydra-body.
+    this should be used when the new value is based on previous values in the session."
+    `(with-key-value-store-lock (hydra-body-data ,session)
+       ,@body))
+  
+  (defun attach-head (hydra-body hydra-head)
+    "attaches <hydra-head> to <hydra-body>"
+    (assert-hydra-body hydra-body)
+    (assert-hydra-head hydra-head)
+    (push hydra-head (hydra-body-heads hydra-body)))
+  
+  (defun hydra-body-stale-p (hydra)
+    "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
+    (< (+ (hydra-body-atime hydra) *hydra-body-timeout*)
+       (get-universal-time)))
+#+end_src
+
+** hydra head (screen) representation
+the hydra-head is very similar to the hydra-body.  the main difference is that the head knows about its body.
+
+#+begin_src lisp
+  (defstruct hydra-head
+    (id nil)
+    (data (make-key-value-store))
+    (atime (get-universal-time)))
+  
+  (defmethod touch ((hydra hydra-head))
+    (setf (hydra-head-atime hydra)
+          (get-universal-time)))
+  
+  (defun screen-key (key &optional (screen *hydra-head*))
+    "returns the value of <key> which belongs to <screen>, or nil if it didn't exist.
+      the second value is non-nil iff <key> was found in <screen>."
+    (kv-store-read key (hydra-head-data screen)))
+  
+  (defun (setf screen-key) (value key &optional (screen *hydra-head*))
+    "sets the value of ,key> which belongs to <screen> to <value>."
+    (setf (kv-store-read key (hydra-head-data screen)) value))
+  
+  (defmacro with-screen-db-lock ((&optional (session *hydra-head*)) &body body)
+    "executes <body> with a lock on the datastore of hydra-head.
+      this should be used when the new value is based on previous values in the session."
+    `(with-key-value-store-lock (hydra-head-data ,session)
+       ,@body))
+  
+  (defun hydra-head-stale-p (hydra)
+    "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
+    (< (+ (hydra-head-atime hydra) *hydra-head-timeout*)
+       (get-universal-time)))
+#+end_src
 
 * handling requests
 :PROPERTIES:
@@ -437,11 +562,42 @@ some handy snippets of code which make some code easier to write.
     (format nil "~{~A~}" args))
 #+end_src
 
+** assertions
+various assertions are used, they're tedious to write manually each time.
+
+#+begin_src lisp
+  (defmacro assert-eql-compatible (place)
+    "asserts that place is an eql-compatible place.
+    this means it must be one of:
+    1. a symbol
+    2. a character
+    3. a number"
+    `(assert (or (symbolp ,place)
+                 (numberp ,place)
+                 (characterp ,place))
+             (,place)
+             "~A must contain an object which may be eql-compatible when copied.  it contains ~A." ',place ,place))
+  
+  (defmacro assert-hydra-head (place)
+    "asserts that <place> contains a hydra-head"
+    `(assert (hydra-head-p ,place)
+             (,place)
+             "~A must contain an object of type hydra-head.  it contains ~A." ',place ,place))
+  
+  (defmacro assert-hydra-body (place)
+    "asserts that <place> contains a hydra-body"
+    `(assert (hydra-body-p ,place)
+             (,place)
+             "~A must contain an object of type hydra-body.  it contains ~A." ',place ,place))
+#+end_src
+
 * bolting together the tangled file
 in this section all the code fragments are joined together for the lisp source file(s).
 
 #+begin_src lisp :tangle intercom.lisp
   (in-package :intercom)
+  
+  <<generic-functions>>
   
   <<support>>
   
