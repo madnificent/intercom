@@ -98,8 +98,8 @@
 (defparameter *watchdog-timeout* 600
   "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
 
-(defparameter *hydra-body-id* nil
-  "if we're currently in a hydra session, this contains the secret in the session.")
+;; (defparameter *hydra-body-id* nil
+;;   "if we're currently in a hydra session, this contains the secret in the session.")
 
 (defparameter *hydra-body* nil
   "contains the hydra-body once we have a hydra-body in the current request")
@@ -302,7 +302,7 @@
   "returns all hydra session-varlidation instance which belong to the given hydra-id"
   (assert-nonempty-string hydra-id)
   (with-hydra-auth-store-lock
-    (gethash (session-validation-hydra-id hydra-id)
+    (gethash hydra-id
              *hydra-auth-store*)))
 
 (defun remove-hydra-validation (session-validation)
@@ -358,8 +358,9 @@
   (esc (^)
     (setf *hydra-body*
           (session-validation-hydra-body
-           (^ (find-if #'valid-session-p
-                       (retrieve-hydra-validations (^ (hunchentoot:cookie-in "hydra")))))))
+           (let ((cookie (^ (hunchentoot:cookie-in "hydra"))))
+             (^ (find-if (rcurry #'valid-session-p cookie)
+                         (retrieve-hydra-validations cookie))))))
     (touch *hydra-body*)
     *hydra-body*))
 
@@ -386,7 +387,7 @@
       (setf *hydra-head-id* (hunchentoot:get-parameter "hhid"))
       (setf *hydra-head-id*
             (let ((*rid* "")
-                  (hhid (generate-id)))
+                  (hhid (s+ (generate-id))))
               (message "hhid" hhid)
               hhid))))
 (defun generate-id ()
@@ -398,22 +399,22 @@
           (expt 2 random-binary-digits))
        (random (expt 2 random-binary-digits)))))
 
-(defun ensure-hydra-body (&optional refreshp)
-  "creates a new session and session cookie, unless one was given to us that still exists"
-  ;;---! this should check that that the session cookie really is a session and set it up
-  (let ((hydra-cookie (hunchentoot:cookie-in "hydra")))
-    (setf *hydra-body-id*
-          (or hydra-cookie (s+ (generate-id))))
-    ;;---! and setup the hydra structures in memory 
-    (unless hydra-cookie
-      nil ;;---! ensure hydra-session is setup in memory
-      )
-    (when (or refreshp (not hydra-cookie))
-      (hunchentoot:set-cookie "hydra"
-                              :value *hydra-body-id*
-                              :http-only t
-                              :expires (+ (get-universal-time)
-                                          (* 60 60 24 30))))))
+;; (defun ensure-hydra-body (&optional refreshp)
+;;   "creates a new session and session cookie, unless one was given to us that still exists"
+;;   ;;---! this should check that that the session cookie really is a session and set it up
+;;   (let ((hydra-cookie (hunchentoot:cookie-in "hydra")))
+;;     (setf *hydra-body-id*
+;;           (or hydra-cookie (s+ (generate-id))))
+;;     ;;---! and setup the hydra structures in memory 
+;;     (unless hydra-cookie
+;;       nil ;;---! ensure hydra-session is setup in memory
+;;       )
+;;     (when (or refreshp (not hydra-cookie))
+;;       (hunchentoot:set-cookie "hydra"
+;;                               :value *hydra-body-id*
+;;                               :http-only t
+;;                               :expires (+ (get-universal-time)
+;;                                           (* 60 60 24 30))))))
 (defstruct hydra-body
   (data (make-key-value-store))
   (atime (get-universal-time))
@@ -448,16 +449,16 @@
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
   (< (+ (hydra-body-atime hydra) *hydra-body-timeout*)
      (get-universal-time)))
-(defun ensure-hydra-head ()
-  "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
-  refreshes *hydra-body-id* when no hhid was found in the current request."
-  (let* ((hhid (hunchentoot:get-parameter "hhid"))
-         (*hydra-head-id* (s+ (or hhid (generate-id)))))
-    (ensure-hydra-body hhid)
-    ;;---! setup the datastructures for both the head and the body!
-    (unless hhid
-      (let ((*rid* ""))
-        (message "hhid" *hydra-head-id*)))))
+;; (defun ensure-hydra-head ()
+;;   "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
+;;   refreshes *hydra-body-id* when no hhid was found in the current request."
+;;   (let* ((hhid (hunchentoot:get-parameter "hhid"))
+;;          (*hydra-head-id* (s+ (or hhid (generate-id)))))
+;;     (ensure-hydra-body hhid)
+;;     ;;---! setup the datastructures for both the head and the body!
+;;     (unless hhid
+;;       (let ((*rid* ""))
+;;         (message "hhid" *hydra-head-id*)))))
 (defstruct hydra-head
   (id nil)
   (data (make-key-value-store))
@@ -492,15 +493,15 @@
   (user-agent "" :type string)
   (hydra-body nil :type (or hydra-body null)))
 
-(defun valid-session-p (session-validation)
+(defun valid-session-p (session-validation cookie-identifier)
   "validates the session-validation for the current request"
-  (and (string= *hydra-body-id* (session-validation-hydra-id session-validation))
+  (and (string= cookie-identifier (session-validation-hydra-id session-validation))
        (string= (hunchentoot:host) (session-validation-host session-validation))
        (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
 
-(defun make-session-validation (hydra-body &optional (hydra-id *hydra-body-id*))
+(defun make-session-validation (hydra-body cookie-identifier)
   "constructs a new session-validation object for the current session."
-  (mk-session-validation :hydra-id hydra-id
+  (mk-session-validation :hydra-id cookie-identifier
                          :hydra-body hydra-body
                          :host (hunchentoot:host)
                          :user-agent (hunchentoot:user-agent)))
@@ -508,7 +509,8 @@
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
     (watchdog)
-    (ensure-hydra-head)
+    (ensure-hydra)
+    ;; (ensure-hydra-head)
     (setf (hunchentoot:content-type*) "application/json")
     (let ((open (hunchentoot:parameter "open"))
           (close (hunchentoot:parameter "close")))
