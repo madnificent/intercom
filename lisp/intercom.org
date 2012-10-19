@@ -365,6 +365,37 @@ the hydra head represents a single visualisation of the hydra body.  each head i
           (message "hhid" *hydra-head-id*)))))
 #+end_src
 
+** session validation
+in order to validate that a session is still 'live', we check the following parameters:
+- hydra cookie value
+- host
+- user-agent
+
+#+begin_src lisp
+  (defstruct (session-validation (:constructor mk-session-validation))
+    (hydra-id "" :type string)
+    (host "" :type string)
+    (user-agent "" :type string))
+  
+  (defun valid-session-p (session-validation)
+    "validates the session-validation for the current request"
+    (and (string= *hydra-body-id* (session-validation-hydra-id session-validation))
+         (string= (hunchentoot:host) (session-validation-host session-validation))
+         (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
+  
+  (defun make-session-validation (&optional (hydra-id *hydra-body-id*))
+    "constructs a new session-validation object for the current session."
+    (mk-session-validation :hydra-id hydra-id
+                           :host (hunchentoot:host)
+                           :user-agent (hunchentoot:user-agent)))
+#+end_src
+
+FUTURE WORK: additionally a quality measure can be used for added certainty.  this quality measure should weigh the following values and should compare them to the last request in order to see if the given request is presumed to be valid:
+- real-remote-addr
+- server-protocol
+- remote-port
+- remote-addr
+
 
 * handling requests
 :PROPERTIES:

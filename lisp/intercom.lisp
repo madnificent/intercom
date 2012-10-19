@@ -220,6 +220,22 @@
     (unless hhid
       (let ((*rid* ""))
         (message "hhid" *hydra-head-id*)))))
+(defstruct (session-validation (:constructor mk-session-validation))
+  (hydra-id "" :type string)
+  (host "" :type string)
+  (user-agent "" :type string))
+
+(defun valid-session-p (session-validation)
+  "validates the session-validation for the current request"
+  (and (string= *hydra-body-id* (session-validation-hydra-id session-validation))
+       (string= (hunchentoot:host) (session-validation-host session-validation))
+       (string= (hunchentoot:user-agent) (session-validation-user-agent session-validation))))
+
+(defun make-session-validation (&optional (hydra-id *hydra-body-id*))
+  "constructs a new session-validation object for the current session."
+  (mk-session-validation :hydra-id hydra-id
+                         :host (hunchentoot:host)
+                         :user-agent (hunchentoot:user-agent)))
 
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
