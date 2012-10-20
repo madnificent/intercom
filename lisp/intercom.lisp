@@ -410,11 +410,21 @@
 (defstruct hydra-body
   (data (make-key-value-store))
   (atime (get-universal-time))
-  (heads nil))
+  (heads nil)
+  (gc-callbacks nil)
+  (garbage-collected-body-p nil))
 
 (defmethod touch ((hydra hydra-body))
   (setf (hydra-body-atime hydra)
         (get-universal-time)))
+
+(defun gc-hydra-body (hydra-body)
+  "garbage-collects a hydra-body"
+  (dolist (head (hydra-body-heads hydra-body))
+    (gc-hydra-head head))
+  (dolist (callback (hydra-body-gc-callbacks hydra-body))
+    (funcall callback))
+  (setf (hydra-body-garbage-collected-body-p hydra-body) t))
 
 (defun session-var (key &optional (session *hydra-body*))
   "returns the value of <key> which belongs to <session>, or nil if it didn't exist.
@@ -433,16 +443,25 @@
 
 (defun hydra-body-active-p (hydra)
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
-  (> (+ (hydra-body-atime hydra) *hydra-body-timeout*)
-     (get-universal-time)))
+  (and (not (hydra-body-garbage-collected-body-p hydra))
+       (> (+ (hydra-body-atime hydra) *hydra-body-timeout*)
+          (get-universal-time))))
 (defstruct hydra-head
   (id nil)
   (data (make-key-value-store))
-  (atime (get-universal-time)))
+  (atime (get-universal-time))
+  (gc-callbacks nil)
+  (garbage-collected-body-p nil))
 
 (defmethod touch ((hydra hydra-head))
   (setf (hydra-head-atime hydra)
         (get-universal-time)))
+
+(defun gc-hydra-head (hydra-head)
+  "garbage-collects a hydra-head"
+  (dolist (callback (hydra-head-gc-callbacks hydra-head))
+    (funcall callback))
+  (setf (hydra-head-garbage-collected-body-p hydra-head) t))
 
 (defun screen-var (key &optional (screen *hydra-head*))
   "returns the value of <key> which belongs to <screen>, or nil if it didn't exist.
@@ -455,8 +474,9 @@
 
 (defun hydra-head-active-p (hydra)
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
-  (> (+ (hydra-head-atime hydra) *hydra-head-timeout*)
-     (get-universal-time)))
+  (and (not (hydra-head-garbage-collected-body-p hydra))
+       (> (+ (hydra-head-atime hydra) *hydra-head-timeout*)
+          (get-universal-time))))
 (defstruct (session-validation (:constructor mk-session-validation))
   (hydra-id "" :type string)
   (host "" :type string)
@@ -499,13 +519,23 @@
   and removes the head heads."
   (bordeaux-threads:with-lock-held (*hydra-auth-lock*)
     (loop for k in (hash-keys *hydra-auth-store*)
-       for hydras = (remove-if-not #'hydra-body-active-p
-                                   (gethash k *hydra-auth-store*))
-       if hydras
+       for validations =
+         (remove-if-not (lambda (session-validation)
+                          (let* ((hydra-body (session-validation-hydra-body
+                                              session-validation))
+                                 (activep (hydra-body-active-p hydra-body)))
+                            (unless activep
+                              ;; we need to decide what the throw away at this
+                              ;;  time to ensure we don't forget to gc
+                              (gc-hydra-body hydra-body))
+                            activep))
+                        (gethash k *hydra-auth-store*))
+       if validations
        do 
          (setf (gethash k *hydra-auth-store*)
-               hydras)
-         (maplist #'gc-hydra-heads hydras)
+               validations)
+         (mapcar (compose #'gc-hydra-heads #'session-validation-hydra-body)
+                 validations)
        else
        do
          (remhash k *hydra-auth-store*))))
@@ -514,9 +544,16 @@
   "detaches the dead heads from <hydra-body>."
   ;;---! assumes hydra-body is locked by us
   (assert-hydra-body hydra-body)
-  (setf (hydra-body-heads hydra-body)
-        (remove-if-not #'hydra-head-active-p
-                       (hydra-body-heads hydra-body))))
+  (let* ((new-heads (remove-if-not (lambda (head)
+                                     (let ((activep (hydra-head-active-p head)))
+                                       ;; we need to inline the garbage collection
+                                       ;;  otherwise we may miss one somehow (though unlikely)
+                                       (unless activep
+                                         (gc-hydra-head head))
+                                       activep))
+                                   (hydra-body-heads hydra-body))))
+    (setf (hydra-body-heads hydra-body)
+          new-heads)))
 
 (bordeaux-threads:make-thread
  (let ((store *hydra-auth-store*)
@@ -525,7 +562,7 @@
     (let ((*hydra-auth-store* store)
           (*hydra-auth-lock* lock))
       (loop do
-           (sleep 600)
+           (sleep 1800) ;; we run every 30 minutes
            (gc-hydra-bodies)))))
  :name "hydras garbage collection thread")
 
