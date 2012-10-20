@@ -26,6 +26,15 @@
                                (return-from ,,block-var ,,return-var)
                                ,,val)))))
            ,@body)))))
+
+(defun generate-id ()
+  "we generate an id by taking the universal time and augmenting it by some random number"
+  (let ((random-binary-digits 35)
+        (universal-time-binary-digits 25))
+    ;; let's only care about the last 20 digits of universal time, this gives us roughly one year to cycle
+    (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
+          (expt 2 random-binary-digits))
+       (random (expt 2 random-binary-digits)))))
 (defmacro assert-nonempty-string (place)
   "asserts that <place> contains a non-empty string."
   `(assert (and (stringp ,place)
@@ -92,14 +101,8 @@
 (defparameter *rid* nil
   "variable which contains the request id in functions which represent the execution of a remote procedure.")
 
-(defparameter *store* nil
-  "contains a key-value store for the variables which *should* be in the session")
-
 (defparameter *watchdog-timeout* 600
   "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
-
-;; (defparameter *hydra-body-id* nil
-;;   "if we're currently in a hydra session, this contains the secret in the session.")
 
 (defparameter *hydra-body* nil
   "contains the hydra-body once we have a hydra-body in the current request")
@@ -115,43 +118,41 @@
 
 (defparameter *hydra-head-timeout* 600
   "the time we have before we assume the head is detached.")
-(defmacro with-session-lock ((protection-symbol) &body body)
-  "executes <body> in a piece of code in which the session is locked"
+(defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
+  "executes <body> with a lock on the datastore of hydra-body.
+    this should be used when the new value is based on previous values in the session."
+  `(with-key-value-store-lock (hydra-body-data ,session)
+     ,@body))
+
+(defmacro with-screen-db-lock ((&optional (session '*hydra-head*)) &body body)
+  "executes <body> with a lock on the datastore of hydra-head.
+      this should be used when the new value is based on previous values in the session."
+  `(with-key-value-store-lock (hydra-head-data ,session)
+     ,@body))
+
+(defmacro with-local-screen-lock ((protection-symbol) &body body)
+  "executes <body> in a piece of code in which the head's data is locked"
   `(progn
      (assert-session)
      (macrolet ((,protection-symbol (&body body)
-                  `(bordeaux-threads:with-recursive-lock-held ((gethash 'intercom-session-lock *store*))
+                  `(with-screen-db-lock ()
                      ,@body)))
        ,@body)))
 
 (defmacro in-intercom-session (&body body)
-  "executes a hunchentoot request in an environment in which *store* is bound to the current store."
-  (let ((store-exists-p (gensym "store-exists-p")))
-    `(progn (hunchentoot:start-session)
-            (let ((,store-exists-p (hunchentoot:session-value 'store hunchentoot:*session*))
-                  *store*)
-              (unless ,store-exists-p
-                (setf (hunchentoot:session-value 'store hunchentoot:*session*)
-                      (make-hash-table :synchronized t)))
-              (setf *store* (hunchentoot:session-value 'store hunchentoot:*session*))
-              (unless ,store-exists-p
-                (setf (gethash 'intercom-session-lock *store*)
-                      (bordeaux-threads:make-lock "intercom session lock")))
-              ,@body))))
+  "executes a hunchentoot request in an environment in which the special local variables are
+  bound to be special and local.
+  this contains:
+  - *hydra-body*
+  - *hydra-head*
+  - *hydra-head-id*"
+  `(let (*hydra-body* *hydra-head* *hydra-head-id*)
+     ,@body))
 
 (defun assert-session ()
   "asserts that we're currently running in an environment which is sane for intercom requests/executions"
-  (assert *store*)
-  (assert (gethash 'intercom-session-lock *store*)))
-
-(defun intercom-var (variable)
-  "returns <variable> from the session in *store*"
-  (with-session-lock (!)
-    (! (gethash variable *store*))))
-
-(defun (setf intercom-var) (value variable)
-  (with-session-lock (!)
-    (! (setf (gethash variable *store*) value))))
+  (assert-hydra-body *hydra-body*)
+  (assert-hydra-head *hydra-head*))
 (defun register-remote-procedure (name function)
   "registers the remote procedure for <name> to be <function>."
   (when (gethash name *remote-procedures*)
@@ -180,17 +181,17 @@
   "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as reference.  assumes the special variable *store* exists"
   (assert (get-remote-procedure name))
   (bordeaux-threads:make-thread
-   (let ((store *store*)
-         (session hunchentoot:*session*))
+   (let ((hydra-body *hydra-body*)
+         (hydra-head *hydra-head*))
      (lambda ()
-       (let ((*store* store)
-             (*rid* rid)
-             (hunchentoot:*session* session))
+       (let ((*hydra-body* hydra-body)
+             (*hydra-head* hydra-head)
+             (*rid* rid))
          (start-rid *rid*)
          (unwind-protect
               (apply (get-remote-procedure name) args)
-           (with-session-lock (!)
-             (push rid (intercom-var 'rids-to-end)))))))
+           (with-local-screen-lock (!)
+             (push rid (screen-var 'rids-to-end)))))))
    :initial-bindings (thread-initial-bindings)
    :name name))
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -220,7 +221,7 @@
     `(register-remote-procedure
       ,(translate-remote-procedure-name name)
       ,(make-remote-procedure-lambda-function arguments body))))
-(defun rid-active-p (rid &optional (my-active-rids (intercom-var 'rids)))
+(defun rid-active-p (rid &optional (my-active-rids (screen-var 'rids)))
   "returns non-nil iff <rid> is active for the current user.  by use of the variable my-active-rids,
   the currently active rids can be overridden.  !only use when you know what you're doing!"
   (or (string= rid "")
@@ -228,20 +229,22 @@
 
 (defun start-rid (rid)
   "sets <rid> to be active"
-  (with-session-lock (!)
+  (with-local-screen-lock (!)
     (unless (rid-active-p rid)
-      (! (push rid (intercom-var 'rids))))))
+      (! (push rid (screen-var 'rids))))))
 
 (defun remove-rid (rid)
   "removes the <rid> from the list of active rids"
-  (with-session-lock (!)
-    (! (alexandria:removef (intercom-var 'rids) rid :test #'string=))))
+  (with-local-screen-lock (!)
+    (! (alexandria:removef (screen-var 'rids) rid :test #'string=))))
 
 (defun in-active-remote-procedure-p ()
   "returns non-nil if we are currently in a remote procedure with an active rid."
-  (and *store* *rid*
+  (and *hydra-body* *hydra-head*
+       *rid*
        (rid-active-p *rid*)
-       (channel-activep)))
+       (hydra-head-active-p *hydra-head*)
+       (hydra-body-active-p *hydra-body*)))
 
 (defun activep ()
   "returns non-nil if we are currently in an active remote procedure.
@@ -249,31 +252,31 @@
   (in-active-remote-procedure-p))
 (defun message (type body)
   "sends a message to the client"
-  (with-session-lock (!)
+  (with-local-screen-lock (!)
     (if (in-active-remote-procedure-p)
         (let ((message (jsown:new-js
                          ("type" type)
                          ("rid" *rid*)
                          ("body" body))))
-          (! (push message (intercom-var 'messages))))
+          (! (push message (screen-var 'messages))))
         (warn "can't send messages if not in an active remote procedure"))))
 
 (defun fetch-and-clear-messages ()
   "fetches and clears the messages in the mailbox"
-  (with-session-lock (!)
+  (with-local-screen-lock (!)
     (let (messages my-active-rids)
       (!
        ;; fetch the list of messages
-       (setf messages (intercom-var 'messages))
-       (setf (intercom-var 'messages) nil)
+       (setf messages (screen-var 'messages))
+       (setf (screen-var 'messages) nil)
        ;; correctly change the active rids
-       (setf my-active-rids (intercom-var 'rids))
-       (let ((rids-to-end (intercom-var 'rids-to-end)))
-         (setf (intercom-var 'rids)
+       (setf my-active-rids (screen-var 'rids))
+       (let ((rids-to-end (screen-var 'rids-to-end)))
+         (setf (screen-var 'rids)
                (remove-if (lambda (rid)
                             (find rid rids-to-end :test #'string=))
-                          (intercom-var 'rids))))
-       (setf (intercom-var 'rids-to-end) nil))
+                          (screen-var 'rids))))
+       (setf (screen-var 'rids-to-end) nil))
       (delete-if-not (lambda (message)
                        (rid-active-p (jsown:val message "rid") my-active-rids))
                      (reverse messages)))))
@@ -367,54 +370,46 @@
 (defun ensure-hydra-head (hydra-body)
   "ensures the hydra-head exists and is set in the variable *hydra-head*.
   assumes *hydra-body* is set.  returns the current hydra-head."
-  (let* ((hhid (ensure-hhid))
-         (hydra-head (find hhid (hydra-body-heads hydra-body)
-                           :test #'string= :key #'hydra-head-id)))
-    (if *hydra-head*
-        (progn
-         (touch hydra-head)
-         (setf *hydra-head* hydra-head))
-        (let ((new-head (make-hydra-head :id hhid)))
-          (setf *hydra-head* new-head)
-          (push new-head (hydra-body-heads hydra-body)))))
+  (multiple-value-bind (hhid need-to-send-hhid-p)
+      (ensure-hhid)
+    (let ((hydra-head (find hhid (hydra-body-heads hydra-body)
+                            :test #'string= :key #'hydra-head-id)))
+      (if hydra-head
+          (progn
+            (touch hydra-head)
+            (setf *hydra-head* hydra-head))
+          (let ((new-head (make-hydra-head :id hhid)))
+            (setf *hydra-head* new-head)
+            (push new-head (hydra-body-heads hydra-body)))))
+    (when need-to-send-hhid-p
+      (send-current-hhid)))
   *hydra-head*)
 
 (defun ensure-hhid ()
-  "returns the hhid if one was given as a get-variable, or creates a new hhid
-  and places a message on the stack so the javascript client knows what the hhid is.
-  returns the hhid."
-  (or *hydra-head-id*
-      (setf *hydra-head-id* (hunchentoot:get-parameter "hhid"))
-      (setf *hydra-head-id*
-            (let ((*rid* "")
-                  (hhid (s+ (generate-id))))
-              (message "hhid" hhid)
-              hhid))))
-(defun generate-id ()
-  "we generate an id by taking the universal time and augmenting it by some random number"
-  (let ((random-binary-digits 35)
-        (universal-time-binary-digits 25))
-    ;; let's only care about the last 20 digits of universal time, this gives us roughly one year to cycle
-    (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
-          (expt 2 random-binary-digits))
-       (random (expt 2 random-binary-digits)))))
+  "returns the hhid if one was given as a get-variable, or creates a new hhid.
+  does *not* put the hhid on the message stack.
+  returns (values hhid newp).  if newp is t, a message should be sent to the
+  client (see (send-current-hhid)) so the client knows the hhid."
+  (let (resend-p)
+    (values
+     (or (let ((special *hydra-head-id*))
+           special)
+         (let ((get (hunchentoot:get-parameter "hhid")))
+           (setf *hydra-head-id* get)
+           get)
+         (let ((new (s+ (generate-id))))
+           (setf *hydra-head-id* new)
+           (setf resend-p t)
+           new))
+     resend-p)))
 
-;; (defun ensure-hydra-body (&optional refreshp)
-;;   "creates a new session and session cookie, unless one was given to us that still exists"
-;;   ;;---! this should check that that the session cookie really is a session and set it up
-;;   (let ((hydra-cookie (hunchentoot:cookie-in "hydra")))
-;;     (setf *hydra-body-id*
-;;           (or hydra-cookie (s+ (generate-id))))
-;;     ;;---! and setup the hydra structures in memory 
-;;     (unless hydra-cookie
-;;       nil ;;---! ensure hydra-session is setup in memory
-;;       )
-;;     (when (or refreshp (not hydra-cookie))
-;;       (hunchentoot:set-cookie "hydra"
-;;                               :value *hydra-body-id*
-;;                               :http-only t
-;;                               :expires (+ (get-universal-time)
-;;                                           (* 60 60 24 30))))))
+(defun send-current-hhid ()
+  "sends the current hhid to the client by using the correct intercom message.
+  requires that *hydra-head* and *hydra-head-id* are set correctly."
+  (assert-hydra-head *hydra-head*)
+  (assert-nonempty-string *hydra-head-id*)
+  (let ((*rid* ""))
+    (message "hhid" *hydra-head-id*)))
 (defstruct hydra-body
   (data (make-key-value-store))
   (atime (get-universal-time))
@@ -433,32 +428,16 @@
   "sets the value of ,key> which belongs to <session> to <value>."
   (setf (kv-store-read key (hydra-body-data session)) value))
 
-(defmacro with-session-db-lock ((&optional (session *hydra-body*)) &body body)
-  "executes <body> with a lock on the datastore of hydra-body.
-  this should be used when the new value is based on previous values in the session."
-  `(with-key-value-store-lock (hydra-body-data ,session)
-     ,@body))
-
 (defun attach-head (hydra-body hydra-head)
   "attaches <hydra-head> to <hydra-body>"
   (assert-hydra-body hydra-body)
   (assert-hydra-head hydra-head)
   (push hydra-head (hydra-body-heads hydra-body)))
 
-(defun hydra-body-stale-p (hydra)
+(defun hydra-body-active-p (hydra)
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
-  (< (+ (hydra-body-atime hydra) *hydra-body-timeout*)
+  (> (+ (hydra-body-atime hydra) *hydra-body-timeout*)
      (get-universal-time)))
-;; (defun ensure-hydra-head ()
-;;   "ensures *hydra-head-id* is available.  also ensures the *hydra-body-id* is set.
-;;   refreshes *hydra-body-id* when no hhid was found in the current request."
-;;   (let* ((hhid (hunchentoot:get-parameter "hhid"))
-;;          (*hydra-head-id* (s+ (or hhid (generate-id)))))
-;;     (ensure-hydra-body hhid)
-;;     ;;---! setup the datastructures for both the head and the body!
-;;     (unless hhid
-;;       (let ((*rid* ""))
-;;         (message "hhid" *hydra-head-id*)))))
 (defstruct hydra-head
   (id nil)
   (data (make-key-value-store))
@@ -468,24 +447,18 @@
   (setf (hydra-head-atime hydra)
         (get-universal-time)))
 
-(defun screen-key (key &optional (screen *hydra-head*))
+(defun screen-var (key &optional (screen *hydra-head*))
   "returns the value of <key> which belongs to <screen>, or nil if it didn't exist.
     the second value is non-nil iff <key> was found in <screen>."
   (kv-store-read key (hydra-head-data screen)))
 
-(defun (setf screen-key) (value key &optional (screen *hydra-head*))
+(defun (setf screen-var) (value key &optional (screen *hydra-head*))
   "sets the value of ,key> which belongs to <screen> to <value>."
   (setf (kv-store-read key (hydra-head-data screen)) value))
 
-(defmacro with-screen-db-lock ((&optional (session *hydra-head*)) &body body)
-  "executes <body> with a lock on the datastore of hydra-head.
-    this should be used when the new value is based on previous values in the session."
-  `(with-key-value-store-lock (hydra-head-data ,session)
-     ,@body))
-
-(defun hydra-head-stale-p (hydra)
+(defun hydra-head-active-p (hydra)
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
-  (< (+ (hydra-head-atime hydra) *hydra-head-timeout*)
+  (> (+ (hydra-head-atime hydra) *hydra-head-timeout*)
      (get-universal-time)))
 (defstruct (session-validation (:constructor mk-session-validation))
   (hydra-id "" :type string)
@@ -508,9 +481,8 @@
 
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
-    (watchdog)
     (ensure-hydra)
-    ;; (ensure-hydra-head)
+    ;; (watchdog)
     (setf (hunchentoot:content-type*) "application/json")
     (let ((open (hunchentoot:parameter "open"))
           (close (hunchentoot:parameter "close")))
@@ -524,12 +496,12 @@
 
 (defun watchdog ()
   "indicates the client has phoned home"
-  (setf (intercom-var 'watchdog)
+  (setf (screen-var 'watchdog)
         (get-universal-time)))
 
 (defun channel-activep ()
   "returns non-nil iff the last message we received from the client isn't too long ago"
-  (>= (+ (intercom-var 'watchdog) *watchdog-timeout*)
+  (>= (+ (screen-var 'watchdog) *watchdog-timeout*)
       (get-universal-time)))
 
 (defun perform-intercom-request (jsown-request)
