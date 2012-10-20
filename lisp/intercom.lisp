@@ -101,23 +101,26 @@
 (defparameter *rid* nil
   "variable which contains the request id in functions which represent the execution of a remote procedure.")
 
-(defparameter *watchdog-timeout* 600
-  "if the javascript intercom side doesn't talk to us for more than *watchdog-timeout* seconds, we close down the active connections.")
-
 (defparameter *hydra-body* nil
   "contains the hydra-body once we have a hydra-body in the current request")
-
-(defparameter *hydra-body-timeout* 86400
-  "the time we have before we assume the session has ended.")
-
-(defparameter *hydra-head-id* nil
-  "represents the screen identifier of the current request")
 
 (defparameter *hydra-head* nil
   "contains the hydra-head once we have one in the current request")
 
+(defparameter *hydra-head-id* nil
+  "represents the screen identifier of the current request")
+
 (defparameter *hydra-head-timeout* 600
   "the time we have before we assume the head is detached.")
+
+(defparameter *hydra-body-timeout* 86400
+  "the time we have before we assume the session has ended.")
+
+(defparameter *hydra-auth-store* (make-hash-table :test 'equal)
+  "a hash-table linking each \"hydra\" cookie value to the authentication which belongs to it.")
+
+(defparameter *hydra-auth-lock* (bordeaux-threads:make-lock "hydra-auth-lock")
+  "this lock is used when accessing the hydra-auth-store")
 (defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
   "executes <body> with a lock on the datastore of hydra-body.
     this should be used when the new value is based on previous values in the session."
@@ -281,12 +284,6 @@
                        (rid-active-p (jsown:val message "rid") my-active-rids))
                      (reverse messages)))))
 
-(defparameter *hydra-auth-store* (make-hash-table :test 'equal)
-  "a hash-table linking each \"hydra\" cookie value to the authentication which belongs to it.")
-
-(defparameter *hydra-auth-lock* (bordeaux-threads:make-lock "hydra-auth-lock")
-  "this lock is used when accessing the hydra-auth-store")
-
 (defmacro with-hydra-auth-store-lock (&body body)
   "executes <body> in an environment in which *hydra-auth-store* is locked."
   `(bordeaux-threads:with-lock-held (*hydra-auth-lock*)
@@ -419,12 +416,12 @@
   (setf (hydra-body-atime hydra)
         (get-universal-time)))
 
-(defun session-key (key &optional (session *hydra-body*))
+(defun session-var (key &optional (session *hydra-body*))
   "returns the value of <key> which belongs to <session>, or nil if it didn't exist.
   the second value is non-nil iff <key> was found in <session>."
   (kv-store-read key (hydra-body-data session)))
 
-(defun (setf session-key) (value key &optional (session *hydra-body*))
+(defun (setf session-var) (value key &optional (session *hydra-body*))
   "sets the value of ,key> which belongs to <session> to <value>."
   (setf (kv-store-read key (hydra-body-data session)) value))
 
@@ -482,7 +479,6 @@
 (hunchentoot:define-easy-handler (talk :uri "/talk") ()
   (in-intercom-session
     (ensure-hydra)
-    ;; (watchdog)
     (setf (hunchentoot:content-type*) "application/json")
     (let ((open (hunchentoot:parameter "open"))
           (close (hunchentoot:parameter "close")))
@@ -494,15 +490,44 @@
           (perform-close-request rid)))) ;; rids
     (jsown:to-json (fetch-and-clear-messages))))
 
-(defun watchdog ()
-  "indicates the client has phoned home"
-  (setf (screen-var 'watchdog)
-        (get-universal-time)))
+(defun hash-keys (hash)
+  "returns a list of all hash-keys in <hash>"
+  (loop for k being the hash-keys of hash collect k))
 
-(defun channel-activep ()
-  "returns non-nil iff the last message we received from the client isn't too long ago"
-  (>= (+ (screen-var 'watchdog) *watchdog-timeout*)
-      (get-universal-time)))
+(defun gc-hydra-bodies ()
+  "garbage collect the head hydras.  this removes the session-validation objects
+  and removes the head heads."
+  (bordeaux-threads:with-lock-held (*hydra-auth-lock*)
+    (loop for k in (hash-keys *hydra-auth-store*)
+       for hydras = (remove-if-not #'hydra-body-active-p
+                                   (gethash k *hydra-auth-store*))
+       if hydras
+       do 
+         (setf (gethash k *hydra-auth-store*)
+               hydras)
+         (maplist #'gc-hydra-heads hydras)
+       else
+       do
+         (remhash k *hydra-auth-store*))))
+
+(defun gc-hydra-heads (hydra-body)
+  "detaches the dead heads from <hydra-body>."
+  ;;---! assumes hydra-body is locked by us
+  (assert-hydra-body hydra-body)
+  (setf (hydra-body-heads hydra-body)
+        (remove-if-not #'hydra-head-active-p
+                       (hydra-body-heads hydra-body))))
+
+(bordeaux-threads:make-thread
+ (let ((store *hydra-auth-store*)
+       (lock *hydra-auth-lock*))
+  (lambda ()
+    (let ((*hydra-auth-store* store)
+          (*hydra-auth-lock* lock))
+      (loop do
+           (sleep 600)
+           (gc-hydra-bodies)))))
+ :name "hydras garbage collection thread")
 
 (defun perform-intercom-request (jsown-request)
   "performs an intercom request as described by <jsown-request>."

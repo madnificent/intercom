@@ -3,5 +3,4 @@
   (:use :cl :jsown :alexandria)
   (:export :define-remote-procedure
            :message :activep
-           :*remote-procedure-context*
-           :*watchdog-timeout*))
+           :*remote-procedure-context*))
