@@ -1,4 +1,5 @@
 #+PROPERTY: tangle no
+#+PROPERTY: eval no-export
 #+PROPERTY: cache no
 #+PROPERTY: session yes
 #+PROPERTY: results silent
@@ -64,10 +65,12 @@ we define the parameters separately, this makes it clear what all the relevant p
 
 #+begin_src lisp
   (defparameter *remote-procedures* (make-hash-table :test 'equal :synchronized t)
-    "contains all intercom remote procedures, the keywords being the matched string and the values being the corresponding function.")
+    "contains all intercom remote procedures, the keywords being the matched string and the values
+    being the corresponding function.")
   
   (defparameter *rid* nil
-    "variable which contains the request id in functions which represent the execution of a remote procedure.")
+    "variable which contains the request id in functions which represent the execution of
+    a remote procedure.")
   
   (defparameter *hydra-body* nil
     "contains the hydra-body once we have a hydra-body in the current request")
@@ -127,7 +130,8 @@ the session of the user will be contacted on various occasions, in multiple thre
        ,@body))
   
   (defun assert-session ()
-    "asserts that we're currently running in an environment which is sane for intercom requests/executions"
+    "asserts that we're currently running in an environment which is sane for intercom
+    requests/executions"
     (assert-hydra-body *hydra-body*)
     (assert-hydra-head *hydra-head*))
 #+end_src
@@ -161,7 +165,9 @@ a remote procedure connects a string to a function to be called when a request i
                  bordeaux-threads:*default-special-bindings*))
   
   (defun call-remote-procedure (rid name &rest args)
-    "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as reference.  assumes the special variable *store* exists"
+    "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as
+    reference.  assumes the special variables *hydra-head* and *hydra-body* exist and
+    respectively contain a hydra-head and a hydra-body."
     (assert (get-remote-procedure name))
     (bordeaux-threads:make-thread
      (let ((hydra-body *hydra-body*)
@@ -184,23 +190,35 @@ some syntactic sugar to define remote procedures is obviously welcome.  this is 
 #+begin_src lisp
   (eval-when (:compile-toplevel :load-toplevel :execute)
     (defun make-remote-procedure-lambda-function (arguments body)
-      "builds the s-expression representation for the lambda function which can be called for the definition of a remote procedure.  this handles the creation of the &key arguments."
+      "builds the s-expression representation for the lambda function which can be called for
+      the definition of a remote procedure.  this handles the creation of the &key arguments."
       (let* ((arguments (split-sequence:split-sequence '&key arguments))
              (symbols (loop repeat (1- (length arguments)) collect (gensym "jsown-object"))))
-        `(lambda (,@(first arguments) ,@symbols)
-           ,@(if (rest arguments)
-                 `((let ,(loop for sym in symbols
-                            for args in (rest arguments)
-                            append (loop for arg in args
-                                      collect `(,arg (and (find ,(string-downcase (string arg))
-                                                                (jsown:keywords ,sym)
-                                                                :test #'string=)
-                                                          (jsown:val ,sym ,(string-downcase (string arg)))))))
-                     ,@body))
-                 body)))))
+        (labels (;; outputs code to bind <arg> to the value it has in <jsown-obj-var>.
+                 (make-jsown-key-sym-binding (jsown-obj-var arg)
+                 
+                   (let ((jsown-key (string-downcase (string arg))))
+                     `(,arg (and (find ,jsown-key
+                                       (jsown:keywords ,jsown-obj-var)
+                                       :test #'string=)
+                                 (jsown:val ,jsown-obj-var ,jsown-key)))))
+                 ;; makes the body of all let bindings for the &key arguments, the others
+                 ;; handled in the arguments the lambda function accepts
+                 (make-jsown-val-let-bindings ()
+                   (loop for sym in symbols
+                      for args in (rest arguments)
+                      append (loop for arg in args
+                                collect (make-jsown-key-sym-binding sym arg)))))
+          `(lambda (,@(first arguments) ,@symbols)
+             ,@(if (rest arguments)
+                   `((let ,(make-jsown-val-let-bindings)
+                       ,@body))
+                   body))))))
   
   (defmacro define-remote-procedure (name (&rest arguments) &body body)
-    "defines a remote procedure with <name> as the name to be called and <arguments> as the assumed arguments.  if <name> is a symbol with only non- lower-case-p characters, then it is converted to lowercase."
+    "defines a remote procedure with <name> as the name to be called and <arguments> as the
+     assumed arguments.  if <name> is a symbol with only non- lower-case-p characters,
+     then it is converted to lowercase."
     (flet ((translate-remote-procedure-name (name)
              (if (and (symbolp name)
                       (not (some #'lower-case-p (string name))))
@@ -413,7 +431,8 @@ in order to store sessions, we store the auth-keys and the authentications which
     "removes the session-validation <session-validation> from the known validations."
     (assert-hydra-session-validation session-validation)
     (with-hydra-auth-store-lock
-      ;;---! do something smart with a counter in the hydra-body here so we know the hydra-body should be terminated too
+      ;;---! do something smart with a counter in the hydra-body here so we know the hydra-body
+      ;;     should be terminated too
       (remhash (session-validation-hydra-id session-validation)
                *hydra-auth-store*)))
 #+end_src
@@ -683,7 +702,8 @@ some handy snippets of code which make some code easier to write.
     (format nil "~{~A~}" args))
   
   (defmacro with-doublequotes ((&rest variables) &body body)
-    "makes sure each variable in variables is bound to itself, essentially allowing you to write ,, in a double backtick to get that symbol.  handy for gensym."
+    "makes sure each variable in variables is bound to itself, essentially allowing you 
+    to write ,, in a double backtick to get that symbol.  handy for gensym."
     `(let ,(loop for var in variables
               collect `(,var ',var))
        ,@body))
@@ -705,7 +725,8 @@ some handy snippets of code which make some code easier to write.
     "we generate an id by taking the universal time and augmenting it by some random number"
     (let ((random-binary-digits 35)
           (universal-time-binary-digits 25))
-      ;; let's only care about the last 20 digits of universal time, this gives us roughly one year to cycle
+      ;; let's only care about the last 20 digits of universal time,
+      ;; this gives us roughly one year to cycle
       (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
             (expt 2 random-binary-digits))
          (random (expt 2 random-binary-digits)))))
@@ -732,7 +753,8 @@ various assertions are used, they're tedious to write manually each time.
                  (numberp ,place)
                  (characterp ,place))
              (,place)
-             "~A must contain an object which may be eql-compatible when copied.  it contains ~A." ',place ,place))
+             "~A must contain an object which may be eql-compatible when copied.  it contains ~A."
+             ',place ,place))
   
   (defmacro assert-hydra-head (place)
     "asserts that <place> contains a hydra-head"
@@ -750,7 +772,8 @@ various assertions are used, they're tedious to write manually each time.
     "asserts that <place> contains a hydra-session"
     `(assert (session-validation-p ,place)
              (,place)
-             "~A must contain an object of type session-validation.  it contains ~A." ',place ,place))
+             "~A must contain an object of type session-validation.  it contains ~A."
+             ',place ,place))
 #+end_src
 
 ** key-value storage
@@ -838,11 +861,12 @@ in this section all the code fragments are joined together for the lisp source f
     (let ((start-time (get-internal-real-time)))
       (loop for nr from 0 below count
          for sleepytime = (rand-between (/ min-ms 1000) (/ max-ms 1000))
-         do (message "current-time" (jsown:new-js ("count" nr)
-                                                  ("timeout" (round (* sleepytime 1000)))
-                                                  ("total-time" (round (* (/ (- (get-internal-real-time) start-time)
-                                                                             internal-time-units-per-second)
-                                                                          1000))))))
+         do (message "current-time"
+                     (jsown:new-js ("count" nr)
+                                   ("timeout" (round (* sleepytime 1000)))
+                                   ("total-time" (round (* (/ (- (get-internal-real-time) start-time)
+                                                              internal-time-units-per-second)
+                                                           1000))))))
       (message end-key "ok")))
 #+end_src
 

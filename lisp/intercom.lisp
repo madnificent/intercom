@@ -96,10 +96,12 @@
           value)))
 
 (defparameter *remote-procedures* (make-hash-table :test 'equal :synchronized t)
-  "contains all intercom remote procedures, the keywords being the matched string and the values being the corresponding function.")
+  "contains all intercom remote procedures, the keywords being the matched string and the values
+  being the corresponding function.")
 
 (defparameter *rid* nil
-  "variable which contains the request id in functions which represent the execution of a remote procedure.")
+  "variable which contains the request id in functions which represent the execution of
+  a remote procedure.")
 
 (defparameter *hydra-body* nil
   "contains the hydra-body once we have a hydra-body in the current request")
@@ -153,7 +155,8 @@
      ,@body))
 
 (defun assert-session ()
-  "asserts that we're currently running in an environment which is sane for intercom requests/executions"
+  "asserts that we're currently running in an environment which is sane for intercom
+  requests/executions"
   (assert-hydra-body *hydra-body*)
   (assert-hydra-head *hydra-head*))
 (defun register-remote-procedure (name function)
@@ -181,7 +184,9 @@
                bordeaux-threads:*default-special-bindings*))
 
 (defun call-remote-procedure (rid name &rest args)
-  "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as reference.  assumes the special variable *store* exists"
+  "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as
+  reference.  assumes the special variables *hydra-head* and *hydra-body* exist and
+  respectively contain a hydra-head and a hydra-body."
   (assert (get-remote-procedure name))
   (bordeaux-threads:make-thread
    (let ((hydra-body *hydra-body*)
@@ -199,20 +204,33 @@
    :name name))
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun make-remote-procedure-lambda-function (arguments body)
-    "builds the s-expression representation for the lambda function which can be called for the definition of a remote procedure.  this handles the creation of the &key arguments."
+    "builds the s-expression representation for the lambda function which can be called for
+    the definition of a remote procedure.  this handles the creation of the &key arguments."
     (let* ((arguments (split-sequence:split-sequence '&key arguments))
            (symbols (loop repeat (1- (length arguments)) collect (gensym "jsown-object"))))
-      `(lambda (,@(first arguments) ,@symbols)
-         ,@(if (rest arguments)
-               `((let ,(loop for sym in symbols
-                          for args in (rest arguments)
-                          append (loop for arg in args
-                                    collect `(,arg (and (find ,(string-downcase (string arg))
-                                                              (jsown:keywords ,sym)
-                                                              :test #'string=)
-                                                        (jsown:val ,sym ,(string-downcase (string arg)))))))
-                   ,@body))
-               body)))))
+      (labels ((make-jsown-key-sym-binding (jsown-obj-var arg)
+                 "outputs code to bind <arg> to the value it has in <jsown-obj-var>."
+                 `(,arg (and (find ,(string-downcase (string arg))
+                                   (jsown:keywords ,jsown-obj-var)
+                                   :test #'string=)
+                             (jsown:val ,jsown-obj-var ,(string-downcase (string arg))))))
+               (make-jsown-val-let-bindings ()
+                 (loop for sym in symbols
+                    for args in (rest arguments)
+                    append (loop for arg in args
+                              collect (make-jsown-key-sym-binding sym arg)))))
+        `(lambda (,@(first arguments) ,@symbols)
+           ,@(if (rest arguments)
+                 `((let ,(make-jsown-val-let-bindings)
+                         ;; (loop for sym in symbols
+                         ;;    for args in (rest arguments)
+                         ;;    append (loop for arg in args
+                         ;;              collect `(,arg (and (find ,(string-downcase (string arg))
+                         ;;                                        (jsown:keywords ,sym)
+                         ;;                                        :test #'string=)
+                         ;;                                  (jsown:val ,sym ,(string-downcase (string arg)))))))
+                     ,@body))
+                 body))))))
 
 (defmacro define-remote-procedure (name (&rest arguments) &body body)
   "defines a remote procedure with <name> as the name to be called and <arguments> as the assumed arguments.  if <name> is a symbol with only non- lower-case-p characters, then it is converted to lowercase."
