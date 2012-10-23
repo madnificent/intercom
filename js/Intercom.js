@@ -53,6 +53,16 @@ var intercomRecipe={
         
         this.currentRequests[id]=request;
     
+        if(request.timeout && request.timeout>0){
+            var context=this;
+            setTimeout(function(){
+                if(context.currentRequests[id]){
+                    (request.onError || function(){}).call(request,"timeout has passed");
+                    context.cancel(id);
+                }
+            },request.timeout);
+        }
+    
         // keep only relevant properties
         var shortenedRequest={};
         shortenedRequest.rid=request.rid;
@@ -285,8 +295,10 @@ var intercomRecipe={
                 this.handleReply(response);
             }else if(request.onError){
                 request.onError(request);
+                this.handleReply([]);
             }else if(console && console.log){
                 console.log("Sorry, apparently something went horribly wrong! The server responded with a "+request.status+ " error code...");
+                this.handleReply([]);
             }
         }else{
             // no ready yet!
