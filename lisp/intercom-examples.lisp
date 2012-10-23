@@ -28,9 +28,10 @@
   (let ((start-time (get-internal-real-time)))
     (loop for nr from 0 below count
        for sleepytime = (rand-between (/ min-ms 1000) (/ max-ms 1000))
-       do (message "current-time" (jsown:new-js ("count" nr)
-                                                ("timeout" (round (* sleepytime 1000)))
-                                                ("total-time" (round (* (/ (- (get-internal-real-time) start-time)
-                                                                           internal-time-units-per-second)
-                                                                        1000))))))
+       do (message "current-time"
+                   (jsown:new-js ("count" nr)
+                                 ("timeout" (round (* sleepytime 1000)))
+                                 ("total-time" (round (* (/ (- (get-internal-real-time) start-time)
+                                                            internal-time-units-per-second)
+                                                         1000))))))
     (message end-key "ok")))
