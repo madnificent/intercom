@@ -279,7 +279,7 @@ var intercomRecipe={
         var randomSize=100000;
         var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
         
-        httpRequest.open('GET', this.url+"?time="+disableCache+
+        httpRequest.open('POST', this.url+"?time="+disableCache+
                          (this.hydraheadId!=null?"&hhid="+this.hydraheadId:"")+
                          (open.length>0?"&open="+open:"")+
                          (close.length>0?"&close="+close:""));
