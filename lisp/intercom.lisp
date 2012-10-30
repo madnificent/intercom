@@ -99,7 +99,9 @@
     (setf (gethash key (key-value-store-hash store))
           value)))
 
-(defparameter *remote-procedures* (make-hash-table :test 'equal :synchronized t)
+(defparameter *remote-procedures*
+  #+sbcl (make-hash-table :test 'equal :synchronized t)
+  #-sbcl (make-hash-table :test 'equal)            
   "contains all intercom remote procedures, the keywords being the matched string and the values
   being the corresponding function.")
 

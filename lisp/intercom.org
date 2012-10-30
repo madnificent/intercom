@@ -64,7 +64,9 @@ most of the information about the threads is stored in the user's session.  the 
 we define the parameters separately, this makes it clear what all the relevant parameters are.
 
 #+begin_src lisp
-  (defparameter *remote-procedures* (make-hash-table :test 'equal :synchronized t)
+  (defparameter *remote-procedures*
+  ,  #+sbcl (make-hash-table :test 'equal :synchronized t)
+    #-sbcl (make-hash-table :test 'equal)            
     "contains all intercom remote procedures, the keywords being the matched string and the values
     being the corresponding function.")
   
