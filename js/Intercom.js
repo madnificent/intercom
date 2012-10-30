@@ -262,6 +262,10 @@ var intercomRecipe={
             httpRequest = new ActiveXObject("Microsoft.XMLHTTP");
         }
     
+        if(this.debug && console && console.log){
+            console.log("frontend sending message: "+JSON.stringify(requestObject));
+        }
+    
         var context=this;
         httpRequest.onreadystatechange = function(){
             context.handleReadyStateChanged.call(context,httpRequest,requestObject);
