@@ -428,12 +428,20 @@ NOTE: IE stubbornly caches http requests, even if you tell it not to. As a resul
           if(httpRequest.status === 200){
               var response= JSON.parse(httpRequest.responseText);
               this.handleReply(response);
-          }else if(request.onError){
-              request.onError(JSON.parse(httpRequest.responseText));
+          }else if(request.open && request.open.length>0){
+              for(var i=0,open;open=request.open[i];i++){
+                  var actualRequest=this.currentRequests[open.rid];
+                  if(actualRequest && actualRequest.onError){
+                      actualRequest.onError(httpRequest.responseText);
+                      this.complete(open.rid);
+                  }
+              }
               this.handleReply([]);
-          }else if(console && console.log){
+          }else{
+              this.handleReply([]);
+          }
+          if(httpRequest.status!=200 && console && console.log){
               console.log("Sorry, apparently something went horribly wrong! The server responded with a "+httpRequest.status+ " error code...");
-              this.handleReply([]);
           }
       }else{
           // no ready yet!
