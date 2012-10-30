@@ -262,7 +262,9 @@ var intercomRecipe={
             httpRequest = new ActiveXObject("Microsoft.XMLHTTP");
         }
     
-        if(this.debug && console && console.log){
+        if(this.debug && console && console.log &&
+           ((requestObject.open && requestObject.open.length>0) ||
+            (requestObject.close && requestObject.close.length>0))){
             console.log("frontend sending message: "+JSON.stringify(requestObject));
         }
     
