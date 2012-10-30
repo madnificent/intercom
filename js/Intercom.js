@@ -89,7 +89,7 @@ var intercomRecipe={
     /**
        marks the request with the given id as complete. Providing a list of ids is also supported.
        NOTE: this function does NOT inform the server that the request should no longer be remembered
-    ,*/
+    */
     complete:function(requestId){
         if(typeof requestId=="object" && requestId.length && requestId.push){
             for(var i=0, id;id=requestId[i];i++){
@@ -261,31 +261,34 @@ var intercomRecipe={
         } else if (window.ActiveXObject) { // IE 8 and older
             httpRequest = new ActiveXObject("Microsoft.XMLHTTP");
         }
-    
+        
         if(this.debug && console && console.log &&
            ((requestObject.open && requestObject.open.length>0) ||
             (requestObject.close && requestObject.close.length>0))){
             console.log("frontend sending message: "+JSON.stringify(requestObject));
         }
-    
+        
         var context=this;
         httpRequest.onreadystatechange = function(){
             context.handleReadyStateChanged.call(context,httpRequest,requestObject);
         };
+        
+        var open; var close;
+        open = requestObject.open ? JSON.stringify(requestObject.open) : "[]";
+        close = requestObject.close ? JSON.stringify(requestObject.close) : "[]";
     
-        var open=requestObject.open?JSON.stringify(requestObject.open):[];
-        var close=requestObject.close?JSON.stringify(requestObject.close):[];
+        var fd = new FormData();
+        fd.append("open",open);
+        fd.append("close",close);
     
         var randomSize=100000;
         var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
         
         httpRequest.open('POST', this.url+"?time="+disableCache+
-                         (this.hydraheadId!=null?"&hhid="+this.hydraheadId:"")+
-                         (open.length>0?"&open="+open:"")+
-                         (close.length>0?"&close="+close:""));
-        httpRequest.setRequestHeader('Content-Type','application/json');
+                         (this.hydraheadId!=null?"&hhid="+this.hydraheadId:""));
+        
         try{
-            httpRequest.send(null);    
+            httpRequest.send(fd);
         }catch(error){
             if(console && console.log){
                 console.log(error);
