@@ -264,7 +264,7 @@ var intercomRecipe={
     
         var context=this;
         httpRequest.onreadystatechange = function(){
-            context.handleReadyStateChanged.call(context,httpRequest);
+            context.handleReadyStateChanged.call(context,httpRequest,requestObject);
         };
     
         var open=requestObject.open?JSON.stringify(requestObject.open):[];
@@ -287,17 +287,17 @@ var intercomRecipe={
         }
     },
     //* handles the response of the server
-    handleReadyStateChanged:function(request){
-        if(request.readyState === 4){
+    handleReadyStateChanged:function(httpRequest, request){
+        if(httpRequest.readyState === 4){
             // request has been handled
-            if(request.status === 200){
-                var response= JSON.parse(request.responseText);
+            if(httpRequest.status === 200){
+                var response= JSON.parse(httpRequest.responseText);
                 this.handleReply(response);
             }else if(request.onError){
-                request.onError(request);
+                request.onError(JSON.parse(httpRequest.responseText));
                 this.handleReply([]);
             }else if(console && console.log){
-                console.log("Sorry, apparently something went horribly wrong! The server responded with a "+request.status+ " error code...");
+                console.log("Sorry, apparently something went horribly wrong! The server responded with a "+httpRequest.status+ " error code...");
                 this.handleReply([]);
             }
         }else{
