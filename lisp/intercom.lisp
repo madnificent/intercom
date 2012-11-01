@@ -129,6 +129,9 @@
 
 (defparameter *hydra-auth-lock* (bordeaux-threads:make-lock "hydra-auth-lock")
   "this lock is used when accessing the hydra-auth-store")
+
+(defparameter *current-thread-start-internal-runtime* nil
+  "contains the internal runtime when this RPC call was started.")
 (defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
   "executes <body> with a lock on the datastore of hydra-body.
     this should be used when the new value is based on previous values in the session."
@@ -200,6 +203,7 @@
      (lambda ()
        (let ((*hydra-body* hydra-body)
              (*hydra-head* hydra-head)
+             (*current-thread-start-internal-runtime* (get-internal-run-time))
              (*rid* rid))
          (start-rid *rid*)
          (unwind-protect
@@ -283,6 +287,12 @@
         (let ((message (jsown:new-js
                          ("type" type)
                          ("rid" *rid*)
+                         ("time" (if *current-thread-start-internal-runtime*
+                                     (coerce (/ (- (get-internal-run-time)
+                                                   *current-thread-start-internal-runtime*)
+                                                internal-time-units-per-second)
+                                             'float)
+                                     "infinity"))
                          ("body" body))))
           (! (push message (screen-var 'messages))))
         (warn "can't send messages if not in an active remote procedure"))))

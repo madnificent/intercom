@@ -94,6 +94,9 @@ we define the parameters separately, this makes it clear what all the relevant p
   
   (defparameter *hydra-auth-lock* (bordeaux-threads:make-lock "hydra-auth-lock")
     "this lock is used when accessing the hydra-auth-store")
+  
+  (defparameter *current-thread-start-internal-runtime* nil
+    "contains the internal runtime when this RPC call was started.")
 #+end_src
 
 ** user session
@@ -177,6 +180,7 @@ a remote procedure connects a string to a function to be called when a request i
        (lambda ()
          (let ((*hydra-body* hydra-body)
                (*hydra-head* hydra-head)
+               (*current-thread-start-internal-runtime* (get-internal-run-time))
                (*rid* rid))
            (start-rid *rid*)
            (unwind-protect
@@ -279,6 +283,12 @@ the message box is a place in the session where requests can store messages for 
           (let ((message (jsown:new-js
                            ("type" type)
                            ("rid" *rid*)
+                           ("time" (if *current-thread-start-internal-runtime*
+                                       (coerce (/ (- (get-internal-run-time)
+                                                     *current-thread-start-internal-runtime*)
+                                                  internal-time-units-per-second)
+                                               'float)
+                                       "infinity"))
                            ("body" body))))
             (! (push message (screen-var 'messages))))
           (warn "can't send messages if not in an active remote procedure"))))
