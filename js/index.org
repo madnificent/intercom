@@ -11,28 +11,6 @@ The connection with the server is managed through the following javascript objec
       throw new Error("Sorry, the ks namespace seems to be taken, please adjust the source code to cover this issue");
   }
   
-  
-  //* IE does not support formdata. Using workaround found at http://stackoverflow.com/questions/8286934/post-formdata-via-xmlhttprequest-object-in-js-cross-browser
-  // this does not allow file upload
-  var ieFormData = function ieFormData(){
-      if(window.FormData == undefined)
-      {
-          this.processData = true;
-          this.contentType = 'application/x-www-form-urlencoded';
-          this.append = function(name, value) {
-              this[name] = value == undefined ? "" : value;
-              return true;
-          }
-      }
-      else
-      {
-          var formdata = new FormData();
-          formdata.processData = false;
-          formdata.contentType = false;
-          return formdata;
-      }
-  }
-  
   //* constructor for an Intercom object. It expects an object that can have the objects as defined in the intercom recepy.
   ks.Intercom= function(args){
       //* initialize properties that would otherwise be used in static fashion
@@ -414,107 +392,104 @@ The actual interaction with the server happens through http requests. This lower
 NOTE: IE stubbornly caches http requests, even if you tell it not to. As a result, each request also sends a time parameter to the server.
 #+name:low-level-interaction
 #+BEGIN_SRC js
-  hydraheadId:null,
-  //* sends a http request to the server
-  sendRequest:function(requestObject){
-      var httpRequest;
-      if (window.XMLHttpRequest) { // Mozilla, Safari, ...
-          httpRequest = new XMLHttpRequest();
-      } else if (window.ActiveXObject) { // IE 8 and older
-          httpRequest = new ActiveXObject("Microsoft.XMLHTTP");
-      }
-      
-      if(this.debug && console && console.log &&
-         ((requestObject.open && requestObject.open.length>0) ||
-          (requestObject.close && requestObject.close.length>0))){
-          console.log("frontend sending message: "+JSON.stringify(requestObject));
-      }
-      
-      var context=this;
-      httpRequest.onreadystatechange = function(){
-          context.handleReadyStateChanged.call(context,httpRequest,requestObject);
-      };
-      
-      var open; var close;
-      open = requestObject.open ? JSON.stringify(requestObject.open) : "[]";
-      close = requestObject.close ? JSON.stringify(requestObject.close) : "[]";
-  
-      var fd = new FormData();
-      fd.append("open",open);
-      fd.append("close",close);
-  
-      var randomSize=100000;
-      var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
-      
-      httpRequest.open('POST', this.url+"?time="+disableCache+
-                       (this.hydraheadId!=null?"&hhid="+this.hydraheadId:""));
-      // httpRequest.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-      // httpRequest.setRequestHeader('processData', fd.processData);
-      // httpRequest.setRequestHeader('cache', false); 
-      
-      try{
-          httpRequest.send(fd);
-          // if(!window.FormData){
-          //     var data={};
-          //     data.open=fd.open;
-          //     data.close=fd.close;
-          //     httpRequest.send(JSON.stringify(data));
-          // }else{
-          //     httpRequest.send(fd);
-          // }
-      }catch(error){
-          if(console && console.log){
-              console.log(error);
-          }
-      }
-  },
-  //* handles the response of the server
-  handleReadyStateChanged:function(httpRequest, request){
-      if(httpRequest.readyState === 4){
-          // request has been handled
-          if(httpRequest.status === 200){
-              var response= JSON.parse(httpRequest.responseText);
-              this.handleReply(response);
-          }else if(request.open && request.open.length>0){
-              for(var i=0,open;open=request.open[i];i++){
-                  var actualRequest=this.currentRequests[open.rid];
-                  if(actualRequest && actualRequest.onError){
-                      actualRequest.onError(httpRequest.responseText);
-                      this.complete(open.rid);
-                  }
-              }
-              this.handleReply([]);
-          }else{
-              this.handleReply([]);
-          }
-          if(httpRequest.status!=200 && console && console.log){
-              console.log("Sorry, apparently something went horribly wrong! The server responded with a "+httpRequest.status+ " error code...");
-          }
-      }else{
-          // no ready yet!
-      }
-  },
-  //* encodes the given javascript object so it can be sent to the server, credit goes to enyojs.
-  objectToQuery: function(/*Object*/ map) {
-      var enc = encodeURIComponent;
-      var pairs = [];
-      var backstop = {};
-      for (var name in map){
-          var value = map[name];
-          if (value != backstop[name]) {
-              var assign = enc(name) + "=";
-              if (value.length!==undefined && typeof value != "string") {
-                  for (var i=0; i < value.length; i++) {
-                      pairs.push(assign + enc(value[i]));
-                  }
-              } else {
-                  pairs.push(assign + enc(value));
-              }
-          }
-      }
-      return pairs.join("&");
-  }
-  
+   hydraheadId:null,
+   //* sends a http request to the server
+   sendRequest:function(requestObject){
+       var httpRequest;
+       if (window.XMLHttpRequest) { // Mozilla, Safari, ...
+           httpRequest = new XMLHttpRequest();
+       } else if (window.ActiveXObject) { // IE 8 and older
+           httpRequest = new ActiveXObject("Microsoft.XMLHTTP");
+       }
+       
+       if(this.debug && console && console.log &&
+          ((requestObject.open && requestObject.open.length>0) ||
+           (requestObject.close && requestObject.close.length>0))){
+           console.log("frontend sending message: "+JSON.stringify(requestObject));
+       }
+       
+       var context=this;
+       httpRequest.onreadystatechange = function(){
+           context.handleReadyStateChanged.call(context,httpRequest,requestObject);
+       };
+       
+       var open; var close;
+       open = requestObject.open ? JSON.stringify(requestObject.open) : "[]";
+       close = requestObject.close ? JSON.stringify(requestObject.close) : "[]";
+   
+       var randomSize=100000;
+       var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
+       
+       httpRequest.open('POST', this.url+"?time="+disableCache+
+                        (this.hydraheadId!=null?"&hhid="+this.hydraheadId:""));
+       
+       try{
+           if(window.FormData){  // new form stuff (any non-old IE)
+               var fd = new FormData();
+               fd.append("open",open);
+               fd.append("close",close);
+               httpRequest.send(fd);
+           }else{ // form stuff for ancient
+               httpRequest.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+               httpRequest.setRequestHeader('processData', true);
+               httpRequest.setRequestHeader('cache', false); 
+   
+               httpRequest.send("open=" + encodeURIComponent(open)
+                                +"&close=" + encodeURIComponent(close));
+           }
+       }catch(error){
+           if(console && console.log){
+               console.log(error);
+           }
+       }
+   },
+   //* handles the response of the server
+   handleReadyStateChanged:function(httpRequest, request){
+       if(httpRequest.readyState === 4){
+           // request has been handled
+           if(httpRequest.status === 200){
+               var response= JSON.parse(httpRequest.responseText);
+               this.handleReply(response);
+           }else if(request.open && request.open.length>0){
+               for(var i=0,open;open=request.open[i];i++){
+                   var actualRequest=this.currentRequests[open.rid];
+                   if(actualRequest && actualRequest.onError){
+                       actualRequest.onError(httpRequest.responseText);
+                       this.complete(open.rid);
+                   }
+               }
+               this.handleReply([]);
+           }else{
+               this.handleReply([]);
+           }
+           if(httpRequest.status!=200 && console && console.log){
+               console.log("Sorry, apparently something went horribly wrong! The server responded with a "+httpRequest.status+ " error code...");
+           }
+       }else{
+           // no ready yet!
+       }
+   },
+   //* encodes the given javascript object so it can be sent to the server, credit goes to enyojs.
+   objectToQuery: function(/*Object*/ map) {
+       var enc = encodeURIComponent;
+       var pairs = [];
+       var backstop = {};
+       for (var name in map){
+           var value = map[name];
+           if (value != backstop[name]) {
+               var assign = enc(name) + "=";
+               if (value.length!==undefined && typeof value != "string") {
+                   for (var i=0; i < value.length; i++) {
+                       pairs.push(assign + enc(value[i]));
+                   }
+               } else {
+                   pairs.push(assign + enc(value));
+               }
+           }
+       }
+       return pairs.join("&");
+   }
+   
 #+END_SRC
 
 * Example

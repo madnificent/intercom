@@ -6,28 +6,6 @@ if(window.ks===undefined){
     throw new Error("Sorry, the ks namespace seems to be taken, please adjust the source code to cover this issue");
 }
 
-
-//* IE does not support formdata. Using workaround found at http://stackoverflow.com/questions/8286934/post-formdata-via-xmlhttprequest-object-in-js-cross-browser
-// this does not allow file upload
-var ieFormData = function ieFormData(){
-    if(window.FormData == undefined)
-    {
-        this.processData = true;
-        this.contentType = 'application/x-www-form-urlencoded';
-        this.append = function(name, value) {
-            this[name] = value == undefined ? "" : value;
-            return true;
-        }
-    }
-    else
-    {
-        var formdata = new FormData();
-        formdata.processData = false;
-        formdata.contentType = false;
-        return formdata;
-    }
-}
-
 //* constructor for an Intercom object. It expects an object that can have the objects as defined in the intercom recepy.
 ks.Intercom= function(args){
     //* initialize properties that would otherwise be used in static fashion
@@ -111,7 +89,7 @@ var intercomRecipe={
     /**
        marks the request with the given id as complete. Providing a list of ids is also supported.
        NOTE: this function does NOT inform the server that the request should no longer be remembered
-    ,*/
+    */
     complete:function(requestId){
         if(typeof requestId=="object" && requestId.length && requestId.push){
             for(var i=0, id;id=requestId[i];i++){
@@ -280,6 +258,8 @@ var intercomRecipe={
     hydraheadId:null,
     //* sends a http request to the server
     sendRequest:function(requestObject){
+        this.debug = true;
+    
         var httpRequest;
         if (window.XMLHttpRequest) { // Mozilla, Safari, ...
             httpRequest = new XMLHttpRequest();
@@ -302,29 +282,26 @@ var intercomRecipe={
         open = requestObject.open ? JSON.stringify(requestObject.open) : "[]";
         close = requestObject.close ? JSON.stringify(requestObject.close) : "[]";
     
-        var fd = new FormData();
-        fd.append("open",open);
-        fd.append("close",close);
-    
         var randomSize=100000;
         var disableCache=Math.floor(new Date().getTime()/randomSize)*randomSize+Math.floor(Math.random()*randomSize);
         
         httpRequest.open('POST', this.url+"?time="+disableCache+
                          (this.hydraheadId!=null?"&hhid="+this.hydraheadId:""));
-        // httpRequest.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        // httpRequest.setRequestHeader('processData', fd.processData);
-        // httpRequest.setRequestHeader('cache', false); 
         
         try{
-            httpRequest.send(fd);
-            // if(!window.FormData){
-            //     var data={};
-            //     data.open=fd.open;
-            //     data.close=fd.close;
-            //     httpRequest.send(JSON.stringify(data));
-            // }else{
-            //     httpRequest.send(fd);
-            // }
+            if(window.FormData){  // new form stuff (any non-old IE)
+                var fd = new FormData();
+                fd.append("open",open);
+                fd.append("close",close);
+                httpRequest.send(fd);
+            }else{ // form stuff for ancient
+                httpRequest.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                httpRequest.setRequestHeader('processData', true);
+                httpRequest.setRequestHeader('cache', false); 
+    
+                httpRequest.send("open=" + encodeURIComponent(open)
+                                 +"&close=" + encodeURIComponent(close));
+            }
         }catch(error){
             if(console && console.log){
                 console.log(error);
