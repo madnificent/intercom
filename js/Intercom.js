@@ -89,7 +89,7 @@ var intercomRecipe={
     /**
        marks the request with the given id as complete. Providing a list of ids is also supported.
        NOTE: this function does NOT inform the server that the request should no longer be remembered
-    */
+    ,*/
     complete:function(requestId){
         if(typeof requestId=="object" && requestId.length && requestId.push){
             for(var i=0, id;id=requestId[i];i++){
@@ -250,6 +250,9 @@ var intercomRecipe={
     handlePublicMessage:function(response){
         if(response.type=="hhid"){
             this.hydraheadId=response.body;
+            if(this.onHhid){
+                this.onHhid.call(this,this);
+            }
         }
     },
     hydraheadId:null,

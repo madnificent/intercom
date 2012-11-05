@@ -343,6 +343,8 @@ All communication with the server happens through a function that is called talk
 The server responds to a poll by sending a javascript object that holds for every requestId with new information a message object. This object is passed on to the handler of the request.
 
 With the new implementation of intercom, a session concept was added. The server assigns us a session id through the public channel of intercom (rid=""). This hydra-head-id (or hhid) will be remembered in the intercom object and will be sent as a parameter at every request.
+
+When the hhid changes, the onHhid function will be called if it exists. The function is called with the intercom as context, but also receives the intercom as a first argument, should the context be overwritten.
 #+name:handling-responses
 #+BEGIN_SRC js
   //* handles all new information that the server sends our way.
@@ -377,6 +379,9 @@ With the new implementation of intercom, a session concept was added. The server
   handlePublicMessage:function(response){
       if(response.type=="hhid"){
           this.hydraheadId=response.body;
+          if(this.onHhid){
+              this.onHhid.call(this,this);
+          }
       }
   }
 #+END_SRC
