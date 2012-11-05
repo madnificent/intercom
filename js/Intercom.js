@@ -302,7 +302,7 @@ var intercomRecipe={
         open = requestObject.open ? JSON.stringify(requestObject.open) : "[]";
         close = requestObject.close ? JSON.stringify(requestObject.close) : "[]";
     
-        var fd = new ieFormData();
+        var fd = new FormData();
         fd.append("open",open);
         fd.append("close",close);
     
@@ -311,19 +311,20 @@ var intercomRecipe={
         
         httpRequest.open('POST', this.url+"?time="+disableCache+
                          (this.hydraheadId!=null?"&hhid="+this.hydraheadId:""));
-        httpRequest.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        httpRequest.setRequestHeader('processData', fd.processData);
-        httpRequest.setRequestHeader('cache', false); 
+        // httpRequest.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        // httpRequest.setRequestHeader('processData', fd.processData);
+        // httpRequest.setRequestHeader('cache', false); 
         
         try{
-            if(!window.FormData){
-                var data={};
-                data.open=fd.open;
-                data.close=fd.close;
-                httpRequest.send(JSON.stringify(data));
-            }else{
-                httpRequest.send(fd);
-            }
+            httpRequest.send(fd);
+            // if(!window.FormData){
+            //     var data={};
+            //     data.open=fd.open;
+            //     data.close=fd.close;
+            //     httpRequest.send(JSON.stringify(data));
+            // }else{
+            //     httpRequest.send(fd);
+            // }
         }catch(error){
             if(console && console.log){
                 console.log(error);
