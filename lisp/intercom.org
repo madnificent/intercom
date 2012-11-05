@@ -83,7 +83,7 @@ we define the parameters separately, this makes it clear what all the relevant p
   (defparameter *hydra-head-id* nil
     "represents the screen identifier of the current request")
   
-  (defparameter *hydra-head-timeout* 600
+  (defparameter *hydra-head-timeout* 120
     "the time we have before we assume the head is detached.")
   
   (defparameter *hydra-body-timeout* 86400
@@ -97,7 +97,7 @@ we define the parameters separately, this makes it clear what all the relevant p
   
   (defparameter *current-thread-start-internal-runtime* nil
     "contains the internal runtime when this RPC call was started.")
-
+  
   (defparameter *auto-kill-rid* nil
     "when this is set to non-nil in a given thread (which is the default for
     call-remote-procedure, then the ending of the call to call-remote-procedure
