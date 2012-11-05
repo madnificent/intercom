@@ -39,7 +39,7 @@ intercom is simple and consists of one package which exports everything.  we did
              :message :activep
              :*remote-procedure-context* :*hydra-head-timeout* :*hydra-body-timeout*
              ;;---? should with-session-db-lock and with-screen-db-lock be exported too?
-             :screen-var :session-var))
+             :screen-var :session-var :threadable-lambda :auto-end-remote-procedure-p))
 #+end_src
 
 * generic functions
@@ -94,6 +94,15 @@ we define the parameters separately, this makes it clear what all the relevant p
   
   (defparameter *hydra-auth-lock* (bordeaux-threads:make-lock "hydra-auth-lock")
     "this lock is used when accessing the hydra-auth-store")
+  
+  (defparameter *current-thread-start-internal-runtime* nil
+    "contains the internal runtime when this RPC call was started.")
+
+  (defparameter *auto-kill-rid* nil
+    "when this is set to non-nil in a given thread (which is the default for
+    call-remote-procedure, then the ending of the call to call-remote-procedure
+    signals the end of the rid.  you can turn it on with #'auto-end-remote-procedure
+    and turn it off with #'dont-auto-end-remote-procedure.")
 #+end_src
 
 ** user session
@@ -163,8 +172,38 @@ a remote procedure connects a string to a function to be called when a request i
      *remote-procedure* contains in front of it (in which the values are evaluated)."
     (concatenate 'list
                  (loop for (k . v) in *remote-procedure-context*
+
                     collect (cons k (eval v)))
                  bordeaux-threads:*default-special-bindings*))
+  
+  (defmacro threadable-lambda ((&rest arglist) &body body)
+    "creates a lambda which can be threaded.  it locally binds the variables which
+    are needed by intercom."
+    (with-gensyms (hydra-body hydra-head rid time)
+      `(let ((,hydra-body *hydra-body*)
+             (,hydra-head *hydra-head*)
+             (,time *current-thread-start-internal-runtime*)
+             (,rid *rid*))
+         (lambda (,@arglist)
+           ,(when (eq (caar body) 'declare)
+                  (car body))
+           (let ((*hydra-body* ,hydra-body)
+                 (*hydra-head* ,hydra-head)
+                 (*rid* ,rid)
+                 (*current-thread-start-internal-runtime* ,time))
+             ,@(if (eq (caar body) 'declare)
+                   (rest body)
+                   body))))))
+  
+  (defun auto-end-remote-procedure-p ()
+    "returns non-nil iff the end of the current remote-procedure indicates that the
+    rid should be killed.  setfable place defaults to t."
+    *auto-kill-rid*)
+  
+  (defun (setf auto-end-remote-procedure-p) (value)
+    "sets the killing of the remote-procedure to <value>.  non-nil indicates that
+    the remote-procedure should be killed (the default), nil indicates the inverse."
+    (setf *auto-kill-rid* value))
   
   (defun call-remote-procedure (rid name &rest args)
     "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as
@@ -172,17 +211,28 @@ a remote procedure connects a string to a function to be called when a request i
     respectively contain a hydra-head and a hydra-body."
     (assert (get-remote-procedure name))
     (bordeaux-threads:make-thread
-     (let ((hydra-body *hydra-body*)
-           (hydra-head *hydra-head*))
-       (lambda ()
-         (let ((*hydra-body* hydra-body)
-               (*hydra-head* hydra-head)
-               (*rid* rid))
+     (let ((*rid* rid))
+       (threadable-lambda ()
+         (let ((*current-thread-start-internal-runtime* (get-internal-run-time))
+               (*auto-kill-rid* t))
            (start-rid *rid*)
            (unwind-protect
                 (apply (get-remote-procedure name) args)
-             (with-local-screen-lock (!)
-               (push rid (screen-var 'rids-to-end)))))))
+             (when (auto-end-remote-procedure-p)
+               (with-local-screen-lock (!)
+                 (! (push rid (screen-var 'rids-to-end)))))))))
+     ;; (let ((hydra-body *hydra-body*)
+     ;;       (hydra-head *hydra-head*))
+     ;;   (lambda ()
+     ;;     (let ((*hydra-body* hydra-body)
+     ;;           (*hydra-head* hydra-head)
+     ;;           (*current-thread-start-internal-runtime* (get-internal-run-time))
+     ;;           (*rid* rid))
+     ;;       (start-rid *rid*)
+     ;;       (unwind-protect
+     ;;            (apply (get-remote-procedure name) args)
+     ;;         (with-local-screen-lock (!)
+     ;;           (push rid (screen-var 'rids-to-end)))))))
      :initial-bindings (thread-initial-bindings)
      :name name))
 #+end_src
@@ -279,6 +329,12 @@ the message box is a place in the session where requests can store messages for 
           (let ((message (jsown:new-js
                            ("type" type)
                            ("rid" *rid*)
+                           ("time" (if *current-thread-start-internal-runtime*
+                                       (coerce (/ (- (get-internal-run-time)
+                                                     *current-thread-start-internal-runtime*)
+                                                  internal-time-units-per-second)
+                                               'float)
+                                       "infinity"))
                            ("body" body))))
             (! (push message (screen-var 'messages))))
           (warn "can't send messages if not in an active remote procedure"))))
@@ -303,7 +359,6 @@ the message box is a place in the session where requests can store messages for 
                          (rid-active-p (jsown:val message "rid") my-active-rids))
                        (reverse messages)))))
 #+end_src
-
 
 * communication with the client
 :PROPERTIES:
@@ -691,7 +746,6 @@ when a close request is handled, we must remove the rid.  the thread which is ex
     (remove-rid rid))
 #+end_src
 
-
 * support code
 :PROPERTIES:
 :noweb-ref: support
@@ -807,8 +861,6 @@ both a hydra-body as a hydra-head need to have some form of key-value store.  th
             value)))
 #+end_src
 
-
-
 * bolting together the tangled file
 in this section all the code fragments are joined together for the lisp source file(s).
 
@@ -829,7 +881,6 @@ in this section all the code fragments are joined together for the lisp source f
   
   <<rpc>>
 #+end_src
-
 
 * some examples
 

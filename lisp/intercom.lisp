@@ -36,8 +36,7 @@
     ;; this gives us roughly one year to cycle
     (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
           (expt 2 random-binary-digits))
-       (random (expt 2 random-binary-digits)))))
-(defmacro assert-nonempty-string (place)
+       (random (expt 2 random-binary-digits)))))(defmacro assert-nonempty-string (place)
   "asserts that <place> contains a non-empty string."
   `(assert (and (stringp ,place)
                 (> (length ,place) 0))
@@ -74,8 +73,7 @@
   `(assert (session-validation-p ,place)
            (,place)
            "~A must contain an object of type session-validation.  it contains ~A."
-           ',place ,place))
-(defstruct key-value-store
+           ',place ,place))(defstruct key-value-store
   (lock (bordeaux-threads:make-recursive-lock "key-value-lock"))
   (hash (make-hash-table)))
 
@@ -129,7 +127,15 @@
 
 (defparameter *hydra-auth-lock* (bordeaux-threads:make-lock "hydra-auth-lock")
   "this lock is used when accessing the hydra-auth-store")
-(defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
+
+(defparameter *current-thread-start-internal-runtime* nil
+  "contains the internal runtime when this RPC call was started.")
+
+(defparameter *auto-kill-rid* nil
+  "when this is set to non-nil in a given thread (which is the default for
+  call-remote-procedure, then the ending of the call to call-remote-procedure
+  signals the end of the rid.  you can turn it on with #'auto-end-remote-procedure
+  and turn it off with #'dont-auto-end-remote-procedure.")(defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
   "executes <body> with a lock on the datastore of hydra-body.
     this should be used when the new value is based on previous values in the session."
   `(with-key-value-store-lock (hydra-body-data ,session)
@@ -164,8 +170,7 @@
   "asserts that we're currently running in an environment which is sane for intercom
   requests/executions"
   (assert-hydra-body *hydra-body*)
-  (assert-hydra-head *hydra-head*))
-(defun register-remote-procedure (name function)
+  (assert-hydra-head *hydra-head*))(defun register-remote-procedure (name function)
   "registers the remote procedure for <name> to be <function>."
   (when (gethash name *remote-procedures*)
     (warn "overwriting remote procedure for ~A" name))
@@ -186,8 +191,38 @@
    *remote-procedure* contains in front of it (in which the values are evaluated)."
   (concatenate 'list
                (loop for (k . v) in *remote-procedure-context*
+
                   collect (cons k (eval v)))
                bordeaux-threads:*default-special-bindings*))
+
+(defmacro threadable-lambda ((&rest arglist) &body body)
+  "creates a lambda which can be threaded.  it locally binds the variables which
+  are needed by intercom."
+  (with-gensyms (hydra-body hydra-head rid time)
+    `(let ((,hydra-body *hydra-body*)
+           (,hydra-head *hydra-head*)
+           (,time *current-thread-start-internal-runtime*)
+           (,rid *rid*))
+       (lambda (,@arglist)
+         ,(when (eq (caar body) 'declare)
+                (car body))
+         (let ((*hydra-body* ,hydra-body)
+               (*hydra-head* ,hydra-head)
+               (*rid* ,rid)
+               (*current-thread-start-internal-runtime* ,time))
+           ,@(if (eq (caar body) 'declare)
+                 (rest body)
+                 body))))))
+
+(defun auto-end-remote-procedure-p ()
+  "returns non-nil iff the end of the current remote-procedure indicates that the
+  rid should be killed.  setfable place defaults to t."
+  *auto-kill-rid*)
+
+(defun (setf auto-end-remote-procedure-p) (value)
+  "sets the killing of the remote-procedure to <value>.  non-nil indicates that
+  the remote-procedure should be killed (the default), nil indicates the inverse."
+  (setf *auto-kill-rid* value))
 
 (defun call-remote-procedure (rid name &rest args)
   "calls the remote prodecure with name <name> and <args> as the arguments with <rid> as
@@ -195,20 +230,30 @@
   respectively contain a hydra-head and a hydra-body."
   (assert (get-remote-procedure name))
   (bordeaux-threads:make-thread
-   (let ((hydra-body *hydra-body*)
-         (hydra-head *hydra-head*))
-     (lambda ()
-       (let ((*hydra-body* hydra-body)
-             (*hydra-head* hydra-head)
-             (*rid* rid))
+   (let ((*rid* rid))
+     (threadable-lambda ()
+       (let ((*current-thread-start-internal-runtime* (get-internal-run-time))
+             (*auto-kill-rid* t))
          (start-rid *rid*)
          (unwind-protect
               (apply (get-remote-procedure name) args)
-           (with-local-screen-lock (!)
-             (push rid (screen-var 'rids-to-end)))))))
+           (when (auto-end-remote-procedure-p)
+             (with-local-screen-lock (!)
+               (! (push rid (screen-var 'rids-to-end)))))))))
+   ;; (let ((hydra-body *hydra-body*)
+   ;;       (hydra-head *hydra-head*))
+   ;;   (lambda ()
+   ;;     (let ((*hydra-body* hydra-body)
+   ;;           (*hydra-head* hydra-head)
+   ;;           (*current-thread-start-internal-runtime* (get-internal-run-time))
+   ;;           (*rid* rid))
+   ;;       (start-rid *rid*)
+   ;;       (unwind-protect
+   ;;            (apply (get-remote-procedure name) args)
+   ;;         (with-local-screen-lock (!)
+   ;;           (push rid (screen-var 'rids-to-end)))))))
    :initial-bindings (thread-initial-bindings)
-   :name name))
-(eval-when (:compile-toplevel :load-toplevel :execute)
+   :name name))(eval-when (:compile-toplevel :load-toplevel :execute)
   (defun make-remote-procedure-lambda-function (arguments body)
     "builds the s-expression representation for the lambda function which can be called for
     the definition of a remote procedure.  this handles the creation of the &key arguments."
@@ -246,8 +291,7 @@
                (string name))))
     `(register-remote-procedure
       ,(translate-remote-procedure-name name)
-      ,(make-remote-procedure-lambda-function arguments body))))
-(defun rid-active-p (rid &optional (my-active-rids (screen-var 'rids)))
+      ,(make-remote-procedure-lambda-function arguments body))))(defun rid-active-p (rid &optional (my-active-rids (screen-var 'rids)))
   "returns non-nil iff <rid> is active for the current user.  by use of the variable my-active-rids,
   the currently active rids can be overridden.  !only use when you know what you're doing!"
   (or (string= rid "")
@@ -275,14 +319,19 @@
 (defun activep ()
   "returns non-nil if we are currently in an active remote procedure.
   alias for in-active-remote-procedure-p."
-  (in-active-remote-procedure-p))
-(defun message (type body)
+  (in-active-remote-procedure-p))(defun message (type body)
   "sends a message to the client"
   (with-local-screen-lock (!)
     (if (in-active-remote-procedure-p)
         (let ((message (jsown:new-js
                          ("type" type)
                          ("rid" *rid*)
+                         ("time" (if *current-thread-start-internal-runtime*
+                                     (coerce (/ (- (get-internal-run-time)
+                                                   *current-thread-start-internal-runtime*)
+                                                internal-time-units-per-second)
+                                             'float)
+                                     "infinity"))
                          ("body" body))))
           (! (push message (screen-var 'messages))))
         (warn "can't send messages if not in an active remote procedure"))))
@@ -335,8 +384,7 @@
     ;;---! do something smart with a counter in the hydra-body here so we know the hydra-body
     ;;     should be terminated too
     (remhash (session-validation-hydra-id session-validation)
-             *hydra-auth-store*)))
-(defun ensure-hydra ()
+             *hydra-auth-store*)))(defun ensure-hydra ()
   "ensures the hydra is set up.  this means that:
   - after this function execution:
     - *hydra-head* is bound to the hydra's head
@@ -430,8 +478,7 @@
   (assert-hydra-head *hydra-head*)
   (assert-nonempty-string *hydra-head-id*)
   (let ((*rid* ""))
-    (message "hhid" *hydra-head-id*)))
-(defstruct hydra-body
+    (message "hhid" *hydra-head-id*)))(defstruct hydra-body
   (data (make-key-value-store))
   (atime (get-universal-time))
   (heads nil)
@@ -469,8 +516,7 @@
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
   (and (not (hydra-body-garbage-collected-body-p hydra))
        (> (+ (hydra-body-atime hydra) *hydra-body-timeout*)
-          (get-universal-time))))
-(defstruct hydra-head
+          (get-universal-time))))(defstruct hydra-head
   (id nil)
   (data (make-key-value-store))
   (atime (get-universal-time))
@@ -500,8 +546,7 @@
   "returns non-nil iff the <hydra> hasn't been touched for too long of a time."
   (and (not (hydra-head-garbage-collected-body-p hydra))
        (> (+ (hydra-head-atime hydra) *hydra-head-timeout*)
-          (get-universal-time))))
-(defstruct (session-validation (:constructor mk-session-validation))
+          (get-universal-time))))(defstruct (session-validation (:constructor mk-session-validation))
   (hydra-id "" :type string)
   (host "" :type string)
   (user-agent "" :type string)
@@ -595,7 +640,6 @@
   (apply #'call-remote-procedure
          (jsown:val jsown-request "rid")
          (jsown:val jsown-request "name")
-         (jsown:val jsown-request "args")))
-(defun perform-close-request (rid)
+         (jsown:val jsown-request "args")))(defun perform-close-request (rid)
   "closes the request for the rid."
   (remove-rid rid))
