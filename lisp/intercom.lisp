@@ -526,6 +526,18 @@
   (and (not (hydra-body-garbage-collected-body-p hydra))
        (> (+ (hydra-body-atime hydra) *hydra-body-timeout*)
           (get-universal-time))))
+
+(defun add-session-gc-callback (function &optional (session *hydra-body*))
+  "adds <function> to the list of functions to call on garbage collection of <session>."
+  (with-session-db-lock ()
+    (push function (hydra-body-gc-callbacks session))))
+
+(defun remove-session-gc-callback (function &optional (session *hydra-body*))
+  "removes <function> from the list of functions to call on the garbage collection of <session>."
+  (with-session-db-lock ()
+    (removef (hydra-body-gc-callbacks session)
+             function)))
+
 (defstruct hydra-head
   (id nil)
   (data (make-key-value-store))
@@ -557,6 +569,18 @@
   (and (not (hydra-head-garbage-collected-body-p hydra))
        (> (+ (hydra-head-atime hydra) *hydra-head-timeout*)
           (get-universal-time))))
+
+(defun add-screen-gc-callback (function &optional (screen *hydra-head*))
+  "adds <function> to the list of functions to call on garbage collection of <screen>."
+  (with-session-db-lock ()
+    (push function (hydra-body-gc-callbacks session))))
+
+(defun remove-screen-gc-callback (function &optional (screen *hydra-head*))
+  "removes <function> from the list of functions to call on the garbage collection of <screen>."
+  (with-session-db-lock ()
+    (removef (hydra-body-gc-callbacks session)
+             function)))
+
 (defstruct (session-validation (:constructor mk-session-validation))
   (hydra-id "" :type string)
   (host "" :type string)
