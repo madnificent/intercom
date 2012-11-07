@@ -347,6 +347,16 @@ With the new implementation of intercom, a session concept was added. The server
 When the hhid changes, the onHhid function will be called if it exists. The function is called with the intercom as context, but also receives the intercom as a first argument, should the context be overwritten.
 #+name:handling-responses
 #+BEGIN_SRC js
+  // good job IE<9, good job. (actually, no. you botched it)
+  indexOf:function(item,list,hard){
+      var i=0;
+      for(var i=0,listitem;listitem=list[i];i++){
+          if(item==listitem && (!hard || item===listitem)){
+              return  i;
+          }
+      }
+      return -1;
+  },
   //* handles all new information that the server sends our way.
   respondToRequests:function(responses){
       if(this.debug && console && console.log && responses.length>0){
@@ -358,7 +368,9 @@ When the hhid changes, the onHhid function will be called if it exists. The func
           if(requestId!=""){
               var request=this.currentRequests[requestId];
               if(request){
-                  if(request.keys && request.keys.indexOf(response.type)>=0){
+                  if(request.keys && (request.keys.indexOf?
+                                      request.keys.indexOf(response.type)>=0:
+                                      this.indexOf(response.type,request.keys)>=0)){
                       if(request.onFinish){
                           request.onFinish(response);
                       }

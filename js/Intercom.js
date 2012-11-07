@@ -89,7 +89,7 @@ var intercomRecipe={
     /**
        marks the request with the given id as complete. Providing a list of ids is also supported.
        NOTE: this function does NOT inform the server that the request should no longer be remembered
-    */
+    ,*/
     complete:function(requestId){
         if(typeof requestId=="object" && requestId.length && requestId.push){
             for(var i=0, id;id=requestId[i];i++){
@@ -218,6 +218,16 @@ var intercomRecipe={
         }
         return minSpeedRequired;
     }  ,
+    // good job IE<9, good job. (actually, no. you botched it)
+    indexOf:function(item,list,hard){
+        var i=0;
+        for(var i=0,listitem;listitem=list[i];i++){
+            if(item==listitem && (!hard || item===listitem)){
+                return  i;
+            }
+        }
+        return -1;
+    },
     //* handles all new information that the server sends our way.
     respondToRequests:function(responses){
         if(this.debug && console && console.log && responses.length>0){
@@ -229,7 +239,9 @@ var intercomRecipe={
             if(requestId!=""){
                 var request=this.currentRequests[requestId];
                 if(request){
-                    if(request.keys && request.keys.indexOf(response.type)>=0){
+                    if(request.keys && (request.keys.indexOf?
+                                        request.keys.indexOf(response.type)>=0:
+                                        this.indexOf(response.type,request.keys)>=0)){
                         if(request.onFinish){
                             request.onFinish(response);
                         }
@@ -258,8 +270,6 @@ var intercomRecipe={
     hydraheadId:null,
     //* sends a http request to the server
     sendRequest:function(requestObject){
-        this.debug = true;
-    
         var httpRequest;
         if (window.XMLHttpRequest) { // Mozilla, Safari, ...
             httpRequest = new XMLHttpRequest();
