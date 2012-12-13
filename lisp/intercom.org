@@ -36,7 +36,7 @@ intercom is simple and consists of one package which exports everything.  we did
   (defpackage :intercom
     (:use :cl :jsown :alexandria)
     (:export :define-remote-procedure
-             :message :activep
+             :message :activep  :with-error-as-fail
              :*remote-procedure-context* :*hydra-head-timeout* :*hydra-body-timeout*
              :screen-var :with-screen-db-lock :session-var :with-session-db-lock
              :threadable-lambda :auto-end-remote-procedure-p
@@ -108,7 +108,7 @@ we define the parameters separately, this makes it clear what all the relevant p
 #+end_src
 
 ** user session
-the session of the user will be contacted on various occasions, in multiple threads.  therefore, we create a function which creates the session and -if necessary- populates it with a lock which should be held when modifying the variables in the session.  some sugar is added to manage the session locks in the macro with-local-screen-lock.
+the session of the user will be contacted on various occasions, in multiple threads.  the following constructions make it easier to access the session, which is further implemented later in this document.
 
 #+begin_src lisp
   (defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
@@ -223,18 +223,6 @@ a remote procedure connects a string to a function to be called when a request i
              (when (auto-end-remote-procedure-p)
                (with-local-screen-lock (!)
                  (! (push rid (screen-var 'rids-to-end)))))))))
-     ;; (let ((hydra-body *hydra-body*)
-     ;;       (hydra-head *hydra-head*))
-     ;;   (lambda ()
-     ;;     (let ((*hydra-body* hydra-body)
-     ;;           (*hydra-head* hydra-head)
-     ;;           (*current-thread-start-internal-runtime* (get-internal-run-time))
-     ;;           (*rid* rid))
-     ;;       (start-rid *rid*)
-     ;;       (unwind-protect
-     ;;            (apply (get-remote-procedure name) args)
-     ;;         (with-local-screen-lock (!)
-     ;;           (push rid (screen-var 'rids-to-end)))))))
      :initial-bindings (thread-initial-bindings)
      :name name))
 #+end_src
@@ -281,6 +269,18 @@ some syntactic sugar to define remote procedures is obviously welcome.  this is 
       `(register-remote-procedure
         ,(translate-remote-procedure-name name)
         ,(make-remote-procedure-lambda-function arguments body))))
+#+end_src
+
+as a last part we add some idiomatic failur-handling wrapper.
+
+#+begin_src lisp
+  (defmacro with-error-as-fail (&body body)
+    "executes <body> in an environment in which all errors are catched and sent as a message
+    with type \"fail\" to the user."
+    `(handler-case
+         (progn ,@body)
+       (error (err)
+         (message "fail" (format nil "~A" err)))))
 #+end_src
 
 ** request identifiers (rids)

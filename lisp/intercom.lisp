@@ -244,18 +244,6 @@
            (when (auto-end-remote-procedure-p)
              (with-local-screen-lock (!)
                (! (push rid (screen-var 'rids-to-end)))))))))
-   ;; (let ((hydra-body *hydra-body*)
-   ;;       (hydra-head *hydra-head*))
-   ;;   (lambda ()
-   ;;     (let ((*hydra-body* hydra-body)
-   ;;           (*hydra-head* hydra-head)
-   ;;           (*current-thread-start-internal-runtime* (get-internal-run-time))
-   ;;           (*rid* rid))
-   ;;       (start-rid *rid*)
-   ;;       (unwind-protect
-   ;;            (apply (get-remote-procedure name) args)
-   ;;         (with-local-screen-lock (!)
-   ;;           (push rid (screen-var 'rids-to-end)))))))
    :initial-bindings (thread-initial-bindings)
    :name name))
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -297,6 +285,13 @@
     `(register-remote-procedure
       ,(translate-remote-procedure-name name)
       ,(make-remote-procedure-lambda-function arguments body))))
+(defmacro with-error-as-fail (&body body)
+  "executes <body> in an environment in which all errors are catched and sent as a message
+  with type \"fail\" to the user."
+  `(handler-case
+       (progn ,@body)
+     (error (err)
+       (message "fail" (format nil "~A" err)))))
 (defun rid-active-p (rid &optional (my-active-rids (screen-var 'rids)))
   "returns non-nil iff <rid> is active for the current user.  by use of the variable my-active-rids,
   the currently active rids can be overridden.  !only use when you know what you're doing!"
