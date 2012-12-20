@@ -36,6 +36,7 @@ intercom is simple and consists of one package which exports everything.  we did
   (defpackage :intercom
     (:use :cl :jsown :alexandria)
     (:export :define-remote-procedure
+             :translate-remote-procedure-name
              :message :activep  :with-error-as-fail
              :*remote-procedure-context* :*hydra-head-timeout* :*hydra-body-timeout*
              :screen-var :with-screen-db-lock :session-var :with-session-db-lock
@@ -257,18 +258,22 @@ some syntactic sugar to define remote procedures is obviously welcome.  this is 
                        ,@body))
                    body))))))
   
+  (eval-when (:compile-toplevel :load-toplevel :execute)
+    (defun translate-remote-procedure-name (name)
+      "translates the remote procedure name <name> to the remote procedure name as can be called
+      from the javascript world."
+      (if (and (symbolp name)
+               (not (some #'lower-case-p (string name))))
+          (string-downcase (string name))
+          (string name))))
+  
   (defmacro define-remote-procedure (name (&rest arguments) &body body)
     "defines a remote procedure with <name> as the name to be called and <arguments> as the
      assumed arguments.  if <name> is a symbol with only non- lower-case-p characters,
      then it is converted to lowercase."
-    (flet ((translate-remote-procedure-name (name)
-             (if (and (symbolp name)
-                      (not (some #'lower-case-p (string name))))
-                 (string-downcase (string name))
-                 (string name))))
-      `(register-remote-procedure
-        ,(translate-remote-procedure-name name)
-        ,(make-remote-procedure-lambda-function arguments body))))
+    `(register-remote-procedure
+      ,(translate-remote-procedure-name name)
+      ,(make-remote-procedure-lambda-function arguments body)))
 #+end_src
 
 as a last part we add some idiomatic failur-handling wrapper.

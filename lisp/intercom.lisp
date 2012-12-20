@@ -273,18 +273,22 @@
                      ,@body))
                  body))))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun translate-remote-procedure-name (name)
+    "translates the remote procedure name <name> to the remote procedure name as can be called
+    from the javascript world."
+    (if (and (symbolp name)
+             (not (some #'lower-case-p (string name))))
+        (string-downcase (string name))
+        (string name))))
+
 (defmacro define-remote-procedure (name (&rest arguments) &body body)
   "defines a remote procedure with <name> as the name to be called and <arguments> as the
    assumed arguments.  if <name> is a symbol with only non- lower-case-p characters,
    then it is converted to lowercase."
-  (flet ((translate-remote-procedure-name (name)
-           (if (and (symbolp name)
-                    (not (some #'lower-case-p (string name))))
-               (string-downcase (string name))
-               (string name))))
-    `(register-remote-procedure
-      ,(translate-remote-procedure-name name)
-      ,(make-remote-procedure-lambda-function arguments body))))
+  `(register-remote-procedure
+    ,(translate-remote-procedure-name name)
+    ,(make-remote-procedure-lambda-function arguments body)))
 (defmacro with-error-as-fail (&body body)
   "executes <body> in an environment in which all errors are catched and sent as a message
   with type \"fail\" to the user."
