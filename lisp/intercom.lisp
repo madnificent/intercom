@@ -36,8 +36,7 @@
     ;; this gives us roughly one year to cycle
     (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
           (expt 2 random-binary-digits))
-       (random (expt 2 random-binary-digits)))))
-(defmacro assert-nonempty-string (place)
+       (random (expt 2 random-binary-digits)))))(defmacro assert-nonempty-string (place)
   "asserts that <place> contains a non-empty string."
   `(assert (and (stringp ,place)
                 (> (length ,place) 0))
@@ -74,8 +73,7 @@
   `(assert (session-validation-p ,place)
            (,place)
            "~A must contain an object of type session-validation.  it contains ~A."
-           ',place ,place))
-(defstruct key-value-store
+           ',place ,place))(defstruct key-value-store
   (lock (bordeaux-threads:make-recursive-lock "key-value-lock"))
   (hash (make-hash-table)))
 
@@ -138,7 +136,15 @@
   call-remote-procedure, then the ending of the call to call-remote-procedure
   signals the end of the rid.  you can turn it on with #'auto-end-remote-procedure
   and turn it off with #'dont-auto-end-remote-procedure.")
-(defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
+
+(defparameter *log-request-stream* nil
+  "when non-nil, this should be a character stream.  an s-expression based log is written to the
+   stream containing the ping-times, the requests and the responses for each user.  the format is
+   as follows: 
+   - ping :: (ping utime hydra-body-id hydra-head-id ip-address)
+   - request :: (req utime hydra-body-id hydra-head-id request-id request-name arg1..argn)
+   - responses :: (res utime hydra-body-id hydra-head-id request-id time message-type message-value)
+   - closes :: (close utime hydra-body-id hydra-head-id request-id)")(defmacro with-session-db-lock ((&optional (session '*hydra-body*)) &body body)
   "executes <body> with a lock on the datastore of hydra-body.
     this should be used when the new value is based on previous values in the session."
   `(with-key-value-store-lock (hydra-body-data ,session)
@@ -173,8 +179,7 @@
   "asserts that we're currently running in an environment which is sane for intercom
   requests/executions"
   (assert-hydra-body *hydra-body*)
-  (assert-hydra-head *hydra-head*))
-(defun register-remote-procedure (name function)
+  (assert-hydra-head *hydra-head*))(defun register-remote-procedure (name function)
   "registers the remote procedure for <name> to be <function>."
   (when (gethash name *remote-procedures*)
     (warn "overwriting remote procedure for ~A" name))
@@ -202,18 +207,20 @@
 (defmacro threadable-lambda ((&rest arglist) &body body)
   "creates a lambda which can be threaded.  it locally binds the variables which
   are needed by intercom."
-  (with-gensyms (hydra-body hydra-head rid time)
+  (with-gensyms (hydra-body hydra-head rid time log-stream)
     `(let ((,hydra-body *hydra-body*)
            (,hydra-head *hydra-head*)
            (,time *current-thread-start-internal-runtime*)
-           (,rid *rid*))
+           (,rid *rid*)
+           (,log-stream *log-request-stream*))
        (lambda (,@arglist)
          ,(when (eq (caar body) 'declare)
                 (car body))
          (let ((*hydra-body* ,hydra-body)
                (*hydra-head* ,hydra-head)
                (*rid* ,rid)
-               (*current-thread-start-internal-runtime* ,time))
+               (*current-thread-start-internal-runtime* ,time)
+               (*log-request-stream* ,log-stream))
            ,@(if (eq (caar body) 'declare)
                  (rest body)
                  body))))))
@@ -245,8 +252,7 @@
              (with-local-screen-lock (!)
                (! (push rid (screen-var 'rids-to-end)))))))))
    :initial-bindings (thread-initial-bindings)
-   :name name))
-(eval-when (:compile-toplevel :load-toplevel :execute)
+   :name name))(eval-when (:compile-toplevel :load-toplevel :execute)
   (defun make-remote-procedure-lambda-function (arguments body)
     "builds the s-expression representation for the lambda function which can be called for
     the definition of a remote procedure.  this handles the creation of the &key arguments."
@@ -288,15 +294,13 @@
    then it is converted to lowercase."
   `(register-remote-procedure
     ,(translate-remote-procedure-name name)
-    ,(make-remote-procedure-lambda-function arguments body)))
-(defmacro with-error-as-fail (&body body)
+    ,(make-remote-procedure-lambda-function arguments body)))(defmacro with-error-as-fail (&body body)
   "executes <body> in an environment in which all errors are catched and sent as a message
   with type \"fail\" to the user."
   `(handler-case
        (progn ,@body)
      (error (err)
-       (message "fail" (format nil "~A" err)))))
-(defun rid-active-p (rid &optional (my-active-rids (screen-var 'rids)))
+       (message "fail" (format nil "~A" err)))))(defun rid-active-p (rid &optional (my-active-rids (screen-var 'rids)))
   "returns non-nil iff <rid> is active for the current user.  by use of the variable my-active-rids,
   the currently active rids can be overridden.  !only use when you know what you're doing!"
   (or (string= rid "")
@@ -324,8 +328,7 @@
 (defun activep ()
   "returns non-nil if we are currently in an active remote procedure.
   alias for in-active-remote-procedure-p."
-  (in-active-remote-procedure-p))
-(defun message (type body)
+  (in-active-remote-procedure-p))(defun message (type body)
   "sends a message to the client"
   (with-local-screen-lock (!)
     (if (in-active-remote-procedure-p)
@@ -390,8 +393,7 @@
     ;;---! do something smart with a counter in the hydra-body here so we know the hydra-body
     ;;     should be terminated too
     (remhash (session-validation-hydra-id session-validation)
-             *hydra-auth-store*)))
-(defun ensure-hydra ()
+             *hydra-auth-store*)))(defun ensure-hydra ()
   "ensures the hydra is set up.  this means that:
   - after this function execution:
     - *hydra-head* is bound to the hydra's head
@@ -485,8 +487,7 @@
   (assert-hydra-head *hydra-head*)
   (assert-nonempty-string *hydra-head-id*)
   (let ((*rid* ""))
-    (message "hhid" *hydra-head-id*)))
-(defstruct hydra-body
+    (message "hhid" *hydra-head-id*)))(defstruct hydra-body
   (data (make-key-value-store))
   (atime (get-universal-time))
   (heads nil)
@@ -536,7 +537,6 @@
   (with-session-db-lock ()
     (removef (hydra-body-gc-callbacks session)
              function)))
-
 (defstruct hydra-head
   (id nil)
   (data (make-key-value-store))
@@ -579,7 +579,6 @@
   (with-session-db-lock ()
     (removef (hydra-body-gc-callbacks session)
              function)))
-
 (defstruct (session-validation (:constructor mk-session-validation))
   (hydra-id "" :type string)
   (host "" :type string)
@@ -603,15 +602,82 @@
   (in-intercom-session
     (ensure-hydra)
     (setf (hunchentoot:content-type*) "application/json")
+    (ping-logging)
     (let ((open (hunchentoot:parameter "open"))
           (close (hunchentoot:parameter "close")))
       (when open
-        (dolist (request (jsown:parse open))
-          (perform-intercom-request request))) ;; [{rid,method,args}]
+        (let ((open-requests (jsown:parse open)))
+          (request-logging open-requests)
+          (dolist (request open-requests)
+            (perform-intercom-request request)))) ;; [{rid,method,args}]
       (when close
-        (dolist (rid (jsown:parse close))
-          (perform-close-request rid)))) ;; rids
-    (jsown:to-json (fetch-and-clear-messages))))
+        (let ((close-requests (jsown:parse close)))
+          (close-request-logging close-requests)
+          (dolist (rid close-requests)
+            (perform-close-request rid))))) ;; rids
+    (let ((messages (fetch-and-clear-messages)))
+      (response-logging messages)
+      (jsown:to-json messages))))(defparameter *log-stream-lock* (bordeaux-threads:make-lock "intercom-log-stream-lock")
+  "this lock should be held when writing to the log stream.")
+
+(defun make-log-message-string (type &rest args)
+  "constructs a log message string for type and the followed arguments."
+  (with-output-to-string (out)
+    (write `(,type
+             ,(get-universal-time)
+             ,(hunchentoot:cookie-in "hydra")
+             ,(hydra-head-id *hydra-head*)
+             ,@args)
+           :stream out :readably t :right-margin 180)))
+
+(defmacro maybe-log-request (&body body)
+  "executes <body> in an environment where the <log*> function is defined iff *log-request-stream*
+   is non-nil.  the <log*> function takes the type of content to log, followed by the content itself
+   by &rest and it splices hydra-body-id hydra-head-id in that list."
+  (alexandria:with-gensyms (strings-var)
+    `(when *log-request-stream*
+       (let (,strings-var)
+         (flet ((log* (type &rest args)
+                  (push (princ-to-string (apply #'make-log-message-string type args))
+                        ,strings-var)))
+           ,@body
+           (when ,strings-var
+             (bordeaux-threads:with-lock-held (*log-stream-lock*)
+               (format *log-request-stream* "~{~A~%~}" (reverse ,strings-var)))))))))
+
+(defun ping-logging ()
+  "handles the logging of the ping request"
+  (maybe-log-request
+    (log* :ping (hunchentoot:real-remote-addr))))
+
+(defun request-logging (requests)
+  "handles the logging of the new requests"
+  (maybe-log-request
+    (dolist (r requests)
+      (apply #'log* :req
+             (handler-case (jsown:val r "rid")
+               (error () nil))
+             (handler-case (jsown:val r "name")
+               (error () nil))
+             (handler-case (jsown:val r "args")
+               (error () nil))))))
+
+(defun close-request-logging (requests)
+  "handles the logging of close requests"
+  (maybe-log-request
+    (dolist (rid requests)
+      (log* :close rid))))
+
+(defun response-logging (responses)
+  "handles the logging of the responses"
+  (maybe-log-request
+    (dolist (r responses)
+      (log* :res
+            (jsown:val r "rid")
+            (jsown:val r "time")
+            (jsown:val r "type")
+            (jsown:val r "body")))))
+
 
 (defun hash-keys (hash)
   "returns a list of all hash-keys in <hash>"
@@ -674,7 +740,6 @@
   (apply #'call-remote-procedure
          (jsown:val jsown-request "rid")
          (jsown:val jsown-request "name")
-         (jsown:val jsown-request "args")))
-(defun perform-close-request (rid)
+         (jsown:val jsown-request "args")))(defun perform-close-request (rid)
   "closes the request for the rid."
   (remove-rid rid))
