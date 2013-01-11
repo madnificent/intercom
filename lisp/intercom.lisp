@@ -622,13 +622,13 @@
 
 (defun make-log-message-string (type &rest args)
   "constructs a log message string for type and the followed arguments."
-  (with-output-to-string (out)
-    (write `(,type
-             ,(get-universal-time)
-             ,(hunchentoot:cookie-in "hydra")
-             ,(hydra-head-id *hydra-head*)
-             ,@args)
-           :stream out :readably t :right-margin 180)))
+  (write-to-string `(,type
+                     ,(get-universal-time)
+                     ,(hunchentoot:cookie-in "hydra")
+                     ,(hydra-head-id *hydra-head*)
+                     ,@args)
+                   ;; sbcl doesn't like to readably print all types of strings
+                   :readably nil :escape t :right-margin 180))
 
 (defmacro maybe-log-request (&body body)
   "executes <body> in an environment where the <log*> function is defined iff *log-request-stream*
@@ -638,7 +638,7 @@
     `(when *log-request-stream*
        (let (,strings-var)
          (flet ((log* (type &rest args)
-                  (push (princ-to-string (apply #'make-log-message-string type args))
+                  (push (apply #'make-log-message-string type args)
                         ,strings-var)))
            ,@body
            (when ,strings-var
