@@ -7,6 +7,7 @@
 #+PROPERTY: noweb yes
 #+PROPERTY: exports code
 #+PROPERTY: padline yes
+#+LATEX_HEADER: \lstset{basicstyle=\footnotesize\ttfamily,breaklines=true}
 Lisp Intercom
 
 this document describes the intercom system from the lisp side.  this contains the description of how to send and receive documents from the client and how to handle them.
@@ -870,6 +871,7 @@ some handy snippets of code which make some code easier to write.
     "pretty-prints and concatenates the resulting strings of each arg in <args>."
     (format nil "~{~A~}" args))
   
+  ;; this macro is only here for future reference
   (defmacro with-doublequotes ((&rest variables) &body body)
     "makes sure each variable in variables is bound to itself, essentially allowing you 
     to write ,, in a double backtick to get that symbol.  handy for gensym."
@@ -877,18 +879,14 @@ some handy snippets of code which make some code easier to write.
               collect `(,var ',var))
        ,@body))
   
-  (defmacro esc ((macro-symbol &key (test ''null) (return nil)) &body body)
-    (with-gensyms (form-var block-var val test-var return-var)
+  (defmacro esc ((escape-symbol &key (test 'null) (return nil)) &body body)
+    (with-gensyms (block-var test-arg)
       `(block ,block-var
-         (let ((,test-var ,test)
-               (,return-var ,return))
-           (macrolet ((,macro-symbol (,form-var)
-                        (with-doublequotes (,block-var ,val ,test-var ,return-var)
-                          `(let ((,,val ,,form-var))
-                             (if (funcall ,,test-var ,,val)
-                                 (return-from ,,block-var ,,return-var)
-                                 ,,val)))))
-             ,@body)))))
+         (flet ((,escape-symbol (,test-arg)
+                  (if (funcall ,test ,test-arg)
+                      (return-from ,block-var ,return)
+                      ,test-arg)))
+           ,@body))))
   
   (defun generate-id ()
     "we generate an id by taking the universal time and augmenting it by some random number"
@@ -899,6 +897,7 @@ some handy snippets of code which make some code easier to write.
       (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
             (expt 2 random-binary-digits))
          (random (expt 2 random-binary-digits)))))
+  
 #+end_src
 
 ** assertions
@@ -977,7 +976,7 @@ both a hydra-body as a hydra-head need to have some form of key-value store.  th
 * bolting together the tangled file
 in this section all the code fragments are joined together for the lisp source file(s).
 
-#+begin_src lisp :tangle intercom.lisp
+#+begin_src lisp :tangle intercom.lisp :exports none
   (in-package :intercom)
   
   <<generic-functions>>
