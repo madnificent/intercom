@@ -16,7 +16,7 @@
             collect `(,var ',var))
      ,@body))
 
-(defmacro esc ((escape-symbol &key (test #'null) (return nil)) &body body)
+(defmacro esc ((escape-symbol &key (test ''null) (return nil)) &body body)
   (with-gensyms (block-var test-arg)
     `(block ,block-var
        (flet ((,escape-symbol (,test-arg)
