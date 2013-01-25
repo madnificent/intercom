@@ -7,6 +7,7 @@
 #+PROPERTY: noweb yes
 #+PROPERTY: exports code
 #+PROPERTY: padline yes
+#+LATEX_HEADER: \lstset{basicstyle=\footnotesize\ttfamily,breaklines=true}
 Lisp Intercom
 
 this document describes the intercom system from the lisp side.  this contains the description of how to send and receive documents from the client and how to handle them.
@@ -36,8 +37,9 @@ intercom is simple and consists of one package which exports everything.  we did
   (defpackage :intercom
     (:use :cl :jsown :alexandria)
     (:export :define-remote-procedure
+             :translate-remote-procedure-name
              :message :activep  :with-error-as-fail
-             :*remote-procedure-context* :*hydra-head-timeout* :*hydra-body-timeout*
+             :*remote-procedure-context* :*hydra-head-timeout* :*hydra-body-timeout* :*log-request-stream*
              :screen-var :with-screen-db-lock :session-var :with-session-db-lock
              :threadable-lambda :auto-end-remote-procedure-p
              :add-session-gc-callback :remove-session-gc-callback
@@ -105,6 +107,15 @@ we define the parameters separately, this makes it clear what all the relevant p
     call-remote-procedure, then the ending of the call to call-remote-procedure
     signals the end of the rid.  you can turn it on with #'auto-end-remote-procedure
     and turn it off with #'dont-auto-end-remote-procedure.")
+  
+  (defparameter *log-request-stream* nil
+    "when non-nil, this should be a character stream.  an s-expression based log is written to the
+     stream containing the ping-times, the requests and the responses for each user.  the format is
+     as follows: 
+     - ping :: (ping utime hydra-body-id hydra-head-id ip-address)
+     - request :: (req utime hydra-body-id hydra-head-id request-id request-name arg1..argn)
+     - responses :: (res utime hydra-body-id hydra-head-id request-id time message-type message-value)
+     - closes :: (close utime hydra-body-id hydra-head-id request-id)")
 #+end_src
 
 ** user session
@@ -181,18 +192,20 @@ a remote procedure connects a string to a function to be called when a request i
   (defmacro threadable-lambda ((&rest arglist) &body body)
     "creates a lambda which can be threaded.  it locally binds the variables which
     are needed by intercom."
-    (with-gensyms (hydra-body hydra-head rid time)
+    (with-gensyms (hydra-body hydra-head rid time log-stream)
       `(let ((,hydra-body *hydra-body*)
              (,hydra-head *hydra-head*)
              (,time *current-thread-start-internal-runtime*)
-             (,rid *rid*))
+             (,rid *rid*)
+             (,log-stream *log-request-stream*))
          (lambda (,@arglist)
            ,(when (eq (caar body) 'declare)
                   (car body))
            (let ((*hydra-body* ,hydra-body)
                  (*hydra-head* ,hydra-head)
                  (*rid* ,rid)
-                 (*current-thread-start-internal-runtime* ,time))
+                 (*current-thread-start-internal-runtime* ,time)
+                 (*log-request-stream* ,log-stream))
              ,@(if (eq (caar body) 'declare)
                    (rest body)
                    body))))))
@@ -257,18 +270,22 @@ some syntactic sugar to define remote procedures is obviously welcome.  this is 
                        ,@body))
                    body))))))
   
+  (eval-when (:compile-toplevel :load-toplevel :execute)
+    (defun translate-remote-procedure-name (name)
+      "translates the remote procedure name <name> to the remote procedure name as can be called
+      from the javascript world."
+      (if (and (symbolp name)
+               (not (some #'lower-case-p (string name))))
+          (string-downcase (string name))
+          (string name))))
+  
   (defmacro define-remote-procedure (name (&rest arguments) &body body)
     "defines a remote procedure with <name> as the name to be called and <arguments> as the
      assumed arguments.  if <name> is a symbol with only non- lower-case-p characters,
      then it is converted to lowercase."
-    (flet ((translate-remote-procedure-name (name)
-             (if (and (symbolp name)
-                      (not (some #'lower-case-p (string name))))
-                 (string-downcase (string name))
-                 (string name))))
-      `(register-remote-procedure
-        ,(translate-remote-procedure-name name)
-        ,(make-remote-procedure-lambda-function arguments body))))
+    `(register-remote-procedure
+      ,(translate-remote-procedure-name name)
+      ,(make-remote-procedure-lambda-function arguments body)))
 #+end_src
 
 as a last part we add some idiomatic failur-handling wrapper.
@@ -378,15 +395,89 @@ all information about the client is stored in the client's session.  this means 
     (in-intercom-session
       (ensure-hydra)
       (setf (hunchentoot:content-type*) "application/json")
+      (ping-logging)
       (let ((open (hunchentoot:parameter "open"))
             (close (hunchentoot:parameter "close")))
         (when open
-          (dolist (request (jsown:parse open))
-            (perform-intercom-request request))) ;; [{rid,method,args}]
+          (let ((open-requests (jsown:parse open)))
+            (request-logging open-requests)
+            (dolist (request open-requests)
+              (perform-intercom-request request)))) ;; [{rid,method,args}]
         (when close
-          (dolist (rid (jsown:parse close))
-            (perform-close-request rid)))) ;; rids
-      (jsown:to-json (fetch-and-clear-messages))))
+          (let ((close-requests (jsown:parse close)))
+            (close-request-logging close-requests)
+            (dolist (rid close-requests)
+              (perform-close-request rid))))) ;; rids
+      (let ((messages (fetch-and-clear-messages)))
+        (response-logging messages)
+        (jsown:to-json messages))))
+#+end_src
+
+** logging
+each request the user makes can be logged on the stream in the special variable log-request-stream.  this subsection contains each of the loggable elements.
+
+#+begin_src lisp
+  (defparameter *log-stream-lock* (bordeaux-threads:make-lock "intercom-log-stream-lock")
+    "this lock should be held when writing to the log stream.")
+  
+  (defun make-log-message-string (type &rest args)
+    "constructs a log message string for type and the followed arguments."
+    (write-to-string `(,type
+                       ,(get-universal-time)
+                       ,(hunchentoot:cookie-in "hydra")
+                       ,(hydra-head-id *hydra-head*)
+                       ,@args)
+                     ;; sbcl doesn't like to readably print all types of strings
+                     :readably nil :escape t :right-margin 180))
+  
+  (defmacro maybe-log-request (&body body)
+    "executes <body> in an environment where the <log*> function is defined iff *log-request-stream*
+     is non-nil.  the <log*> function takes the type of content to log, followed by the content itself
+     by &rest and it splices hydra-body-id hydra-head-id in that list."
+    (alexandria:with-gensyms (strings-var)
+      `(when *log-request-stream*
+         (let (,strings-var)
+           (flet ((log* (type &rest args)
+                    (push (apply #'make-log-message-string type args)
+                          ,strings-var)))
+             ,@body
+             (when ,strings-var
+               (bordeaux-threads:with-lock-held (*log-stream-lock*)
+                 (format *log-request-stream* "~{~A~%~}" (reverse ,strings-var)))))))))
+  
+  (defun ping-logging ()
+    "handles the logging of the ping request"
+    (maybe-log-request
+      (log* :ping (hunchentoot:real-remote-addr))))
+  
+  (defun request-logging (requests)
+    "handles the logging of the new requests"
+    (maybe-log-request
+      (dolist (r requests)
+        (apply #'log* :req
+               (handler-case (jsown:val r "rid")
+                 (error () nil))
+               (handler-case (jsown:val r "name")
+                 (error () nil))
+               (handler-case (jsown:val r "args")
+                 (error () nil))))))
+  
+  (defun close-request-logging (requests)
+    "handles the logging of close requests"
+    (maybe-log-request
+      (dolist (rid requests)
+        (log* :close rid))))
+  
+  (defun response-logging (responses)
+    "handles the logging of the responses"
+    (maybe-log-request
+      (dolist (r responses)
+        (log* :res
+              (jsown:val r "rid")
+              (jsown:val r "time")
+              (jsown:val r "type")
+              (jsown:val r "body")))))
+  
 #+end_src
 
 * communication channel timeout
@@ -597,7 +688,6 @@ whenever a request enters, we need to ensure the hydra is setup.  it must either
       (message "hhid" *hydra-head-id*)))
 #+end_src
 
-
 ** hydra body
 a hydra body is identified by a cookie value.  we base our cookies on regular http-only cookie-values and store the session-cookie in the browser.
 
@@ -657,8 +747,6 @@ the hydra body is represented as a struct which may contain some information.  h
                function)))
 
 #+end_src
-
-
 
 ** hydra head
 the hydra head represents a single visualisation of the hydra body.  each head is identified by a number.  the number, in combination with the body can be used to send messages back to the head.
@@ -783,6 +871,7 @@ some handy snippets of code which make some code easier to write.
     "pretty-prints and concatenates the resulting strings of each arg in <args>."
     (format nil "~{~A~}" args))
   
+  ;; this macro is only here for future reference
   (defmacro with-doublequotes ((&rest variables) &body body)
     "makes sure each variable in variables is bound to itself, essentially allowing you 
     to write ,, in a double backtick to get that symbol.  handy for gensym."
@@ -790,18 +879,14 @@ some handy snippets of code which make some code easier to write.
               collect `(,var ',var))
        ,@body))
   
-  (defmacro esc ((macro-symbol &key (test ''null) (return nil)) &body body)
-    (with-gensyms (form-var block-var val test-var return-var)
+  (defmacro esc ((escape-symbol &key (test ''null) (return nil)) &body body)
+    (with-gensyms (block-var test-arg)
       `(block ,block-var
-         (let ((,test-var ,test)
-               (,return-var ,return))
-           (macrolet ((,macro-symbol (,form-var)
-                        (with-doublequotes (,block-var ,val ,test-var ,return-var)
-                          `(let ((,,val ,,form-var))
-                             (if (funcall ,,test-var ,,val)
-                                 (return-from ,,block-var ,,return-var)
-                                 ,,val)))))
-             ,@body)))))
+         (flet ((,escape-symbol (,test-arg)
+                  (if (funcall ,test ,test-arg)
+                      (return-from ,block-var ,return)
+                      ,test-arg)))
+           ,@body))))
   
   (defun generate-id ()
     "we generate an id by taking the universal time and augmenting it by some random number"
@@ -812,6 +897,7 @@ some handy snippets of code which make some code easier to write.
       (+ (* (mod (get-universal-time) (expt 2 universal-time-binary-digits))
             (expt 2 random-binary-digits))
          (random (expt 2 random-binary-digits)))))
+  
 #+end_src
 
 ** assertions
@@ -890,7 +976,7 @@ both a hydra-body as a hydra-head need to have some form of key-value store.  th
 * bolting together the tangled file
 in this section all the code fragments are joined together for the lisp source file(s).
 
-#+begin_src lisp :tangle intercom.lisp
+#+begin_src lisp :tangle intercom.lisp :exports none
   (in-package :intercom)
   
   <<generic-functions>>
@@ -963,3 +1049,4 @@ we add an asd files to make the loading of the examples a tad easier.
     :serial t
     :components ((:file "intercom-examples")))
 #+end_src
+
