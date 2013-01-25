@@ -200,7 +200,7 @@ var intercomRecipe={
     //* calculates the pollspeed based on the minSpeed and getSpeedAfterTime properties of the open requests
     getPollSpeed:function(){
         var openRequests=false;
-        var minSpeedRequired=Math.max(0,Math.min(this.defaultPollSpeed,10000));
+        var minSpeedRequired=Math.max(0,Math.min(this.defaultPollSpeed,1000000));
         for(var prop in this.currentRequests){
             openRequests=true;
             var requestSpeed=Number.MAX_VALUE;
