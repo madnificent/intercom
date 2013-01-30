@@ -43,7 +43,8 @@ intercom is simple and consists of one package which exports everything.  we did
              :screen-var :with-screen-db-lock :session-var :with-session-db-lock
              :threadable-lambda :auto-end-remote-procedure-p
              :add-session-gc-callback :remove-session-gc-callback
-             :add-screen-gc-callback :remove-screen-gc-callback))
+             :add-screen-gc-callback :remove-screen-gc-callback
+             :handle-talk-request))
 #+end_src
 
 * generic functions
@@ -391,7 +392,9 @@ requests and polling are initiated by the client.  all requests are sent to /int
 all information about the client is stored in the client's session.  this means that all currently active requests (which aren't finished or haven't been canceled) are stored in the session and that all answers are stored in the session.  all responses are sent in json format.  the open and close requests are handled in separate functions.  the last function fetches all messages which should be sent to the client and converts them to the json format.
 
 #+begin_src lisp
-  (hunchentoot:define-easy-handler (talk :uri "/talk") ()
+  (defun handle-talk-request ()
+    "handle-talk-request handles a talk request.
+     splitting this off allows us to handle talking when easy-handlers aren't in use."
     (in-intercom-session
       (ensure-hydra)
       (setf (hunchentoot:content-type*) "application/json")
@@ -411,6 +414,9 @@ all information about the client is stored in the client's session.  this means 
       (let ((messages (fetch-and-clear-messages)))
         (response-logging messages)
         (jsown:to-json messages))))
+  
+  (hunchentoot:define-easy-handler (talk :uri "/talk") ()
+    (handle-talk-request))
 #+end_src
 
 ** logging

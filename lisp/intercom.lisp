@@ -608,7 +608,9 @@
                          :host (hunchentoot:host)
                          :user-agent (hunchentoot:user-agent)))
 
-(hunchentoot:define-easy-handler (talk :uri "/talk") ()
+(defun handle-talk-request ()
+  "handle-talk-request handles a talk request.
+   splitting this off allows us to handle talking when easy-handlers aren't in use."
   (in-intercom-session
     (ensure-hydra)
     (setf (hunchentoot:content-type*) "application/json")
@@ -628,6 +630,9 @@
     (let ((messages (fetch-and-clear-messages)))
       (response-logging messages)
       (jsown:to-json messages))))
+
+(hunchentoot:define-easy-handler (talk :uri "/talk") ()
+  (handle-talk-request))
 (defparameter *log-stream-lock* (bordeaux-threads:make-lock "intercom-log-stream-lock")
   "this lock should be held when writing to the log stream.")
 
